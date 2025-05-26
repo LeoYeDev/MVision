@@ -1,0 +1,3 @@
+{
+  "python.analysis.extraPaths": ["./lib/MvImport", "./lib/Own", "./config"]
+}

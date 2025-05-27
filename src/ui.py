@@ -8,8 +8,6 @@ from tkinter import ttk
 
 sys.path.append("./lib/MvImport")
 sys.path.append("./lib/Own")
-sys.path.append("./config")
-from param import *
 from MvCameraControl_class import *
 from CamOperation_class import *
 
@@ -36,10 +34,9 @@ def ToHexStr(num):
     return hexStr
 
 class AppUI:
-    def __init__(self,window,camera,processor):
+    def __init__(self,window,camera):
         self.window = window
         self.camera = camera
-        self.proc   = processor
         self.build()
 
     def build(self):
@@ -47,8 +44,7 @@ class AppUI:
         self.window.title('BasicDemo')
         self.window.geometry('1150x650')
         self.model_val = tk.StringVar()
-        global triggercheck_val
-        triggercheck_val = tk.IntVar()
+        self.triggercheck_val = tk.IntVar()
         self.page = Frame(self.window,height=400,width=60,relief=GROOVE,bd=5,borderwidth=4)
         self.page.pack(expand=True, fill=BOTH)
         self.panel = Label(self.page)
@@ -92,7 +88,7 @@ class AppUI:
         self.btn_stop_grabbing = tk.Button(self.window, text='Stop Grabbing', width=15, height=1, command = self.stop_grabbing)
         self.btn_stop_grabbing.place(x=160, y=200)
 
-        self.checkbtn_trigger_software = tk.Checkbutton(self.window, text='Tigger by Software', variable=triggercheck_val, onvalue=1, offvalue=0)
+        self.checkbtn_trigger_software = tk.Checkbutton(self.window, text='Tigger by Software', variable=self.triggercheck_val, onvalue=1, offvalue=0)
         self.checkbtn_trigger_software.place(x=20,y=250)
         self.btn_trigger_once = tk.Button(self.window, text='Trigger Once', width=15, height=1, command = self.trigger_once)
         self.btn_trigger_once.place(x=160, y=250)
@@ -109,35 +105,30 @@ class AppUI:
     
     #ch:设置触发模式 | en:set trigger mode
     def set_triggermode(self):
-        global obj_cam_operation
         strMode = self.model_val.get()
-        obj_cam_operation.Set_trigger_mode(strMode)
+        self.camera.obj_cam_operation.Set_trigger_mode(strMode)
 
     #ch:设置触发命令 | en:set trigger software
     def trigger_once(self):
-        global triggercheck_val
-        global obj_cam_operation
-        nCommand = triggercheck_val.get()
-        obj_cam_operation.Trigger_once(nCommand)
+        nCommand = self.triggercheck_val.get()
+        self.camera.obj_cam_operation.Trigger_once(nCommand)
 
     #ch:枚举相机 | en:enum devices
     def enum_devices(self):
-        global deviceList
-        global obj_cam_operation
-        deviceList = MV_CC_DEVICE_INFO_LIST()
+        self.camera.deviceList = MV_CC_DEVICE_INFO_LIST()
         tlayerType = MV_GIGE_DEVICE | MV_USB_DEVICE
-        ret = MvCamera.MV_CC_EnumDevices(tlayerType, deviceList)
+        ret = MvCamera.MV_CC_EnumDevices(tlayerType, self.camera.deviceList)
         if ret != 0:
             tkinter.messagebox.showerror('show error','enum devices fail! ret = '+ ToHexStr(ret))
 
-        if deviceList.nDeviceNum == 0:
+        if self.camera.deviceList.nDeviceNum == 0:
             tkinter.messagebox.showinfo('show info','find no device!')
 
-        print ("Find %d devices!" % deviceList.nDeviceNum)
+        print ("Find %d devices!" % self.camera.deviceList.nDeviceNum)
 
         devList = []
-        for i in range(0, deviceList.nDeviceNum):
-            mvcc_dev_info = cast(deviceList.pDeviceInfo[i], POINTER(MV_CC_DEVICE_INFO)).contents
+        for i in range(0, self.camera.deviceList.nDeviceNum):
+            mvcc_dev_info = cast(self.camera.deviceList.pDeviceInfo[i], POINTER(MV_CC_DEVICE_INFO)).contents
             if mvcc_dev_info.nTLayerType == MV_GIGE_DEVICE:
                 print ("\ngige device: [%d]" % i)
                 chUserDefinedName = ""
@@ -174,37 +165,29 @@ class AppUI:
     
         #ch:打开相机 | en:open device
     def open_device(self):
-        global deviceList
-        global nSelCamIndex
-        global obj_cam_operation
-        global b_is_run
-        if True == b_is_run:
+        if True == self.camera.b_is_run:
             tkinter.messagebox.showinfo('show info','Camera is Running!')
             return
-        obj_cam_operation = CameraOperation(cam,deviceList,nSelCamIndex)
-        ret = obj_cam_operation.Open_device()
+        self.camera.obj_cam_operation = CameraOperation(self.camera.cam,self.camera.deviceList,self.camera.nSelCamIndex)
+        ret = self.camera.obj_cam_operation.Open_device()
         if  0!= ret:
-            b_is_run = False
+            self.camera.b_is_run = False
         else:
             self.model_val.set('continuous')
-            b_is_run = True
+            self.camera.b_is_run = True
 
     # ch:开始取流 | en:Start grab image
     def start_grabbing(self):
-        global obj_cam_operation
-        obj_cam_operation.Start_grabbing(self.window,self.panel)
-
+        self.camera.obj_cam_operation.Start_grabbing(self.window,self.panel)
+        
     # ch:停止取流 | en:Stop grab image
     def stop_grabbing(self):
-        global obj_cam_operation
-        obj_cam_operation.Stop_grabbing()    
+        self.camera.obj_cam_operation.Stop_grabbing()    
 
     # ch:关闭设备 | Close device   
     def close_device(self):
-        global b_is_run
-        global obj_cam_operation
-        obj_cam_operation.Close_device()
-        b_is_run = False 
+        self.camera.obj_cam_operation.Close_device()
+        self.camera.b_is_run = False 
         #清除文本框的数值
         self.text_frame_rate.delete(1.0, tk.END)
         self.text_exposure_time.delete(1.0, tk.END)
@@ -213,48 +196,40 @@ class AppUI:
 
     #绑定下拉列表至设备信息索引
     def xFunc(event,self):
-        global nSelCamIndex
-        nSelCamIndex = TxtWrapBy("[","]",self.device_list.get())
+        self.camera.nSelCamIndex = TxtWrapBy("[","]",self.device_list.get())
 
     #ch:保存bmp图片 | en:save bmp image
     def bmp_save(self):
-        global obj_cam_operation
-        obj_cam_operation.b_save_bmp = True
+        self.camera.obj_cam_operation.b_save_bmp = True
 
     #ch:保存jpg图片 | en:save jpg image
     def jpg_save(self):
-        global obj_cam_operation
-        obj_cam_operation.b_save_jpg = True
+        self.camera.obj_cam_operation.b_save_jpg = True
 
     def get_parameter(self):
-        global obj_cam_operation
-        obj_cam_operation.Get_parameter()
+        self.camera.obj_cam_operation.Get_parameter()
         self.text_frame_rate.delete(1.0, tk.END)
-        self.text_frame_rate.insert(1.0,obj_cam_operation.frame_rate)
+        self.text_frame_rate.insert(1.0,self.camera.obj_cam_operation.frame_rate)
         self.text_exposure_time.delete(1.0, tk.END)
-        self.text_exposure_time.insert(1.0,obj_cam_operation.exposure_time)
+        self.text_exposure_time.insert(1.0,self.camera.obj_cam_operation.exposure_time)
         self.text_gain.delete(1.0, tk.END)
-        self.text_gain.insert(1.0, obj_cam_operation.gain)
+        self.text_gain.insert(1.0, self.camera.obj_cam_operation.gain)
 
     def set_parameter(self):
-        global obj_cam_operation
-        obj_cam_operation.exposure_time = self.text_exposure_time.get(1.0,tk.END)
-        obj_cam_operation.exposure_time = obj_cam_operation.exposure_time.rstrip("\n")
-        obj_cam_operation.gain = self.text_gain.get(1.0,tk.END)
-        obj_cam_operation.gain = obj_cam_operation.gain.rstrip("\n")
-        obj_cam_operation.frame_rate = self.text_frame_rate.get(1.0,tk.END)
-        obj_cam_operation.frame_rate = obj_cam_operation.frame_rate.rstrip("\n")
-        obj_cam_operation.Set_parameter(obj_cam_operation.frame_rate,obj_cam_operation.exposure_time,obj_cam_operation.gain)
+        self.camera.obj_cam_operation.exposure_time = self.text_exposure_time.get(1.0,tk.END)
+        self.camera.obj_cam_operation.exposure_time = self.camera.obj_cam_operation.exposure_time.rstrip("\n")
+        self.camera.obj_cam_operation.gain = self.text_gain.get(1.0,tk.END)
+        self.camera.obj_cam_operation.gain = self.camera.obj_cam_operation.gain.rstrip("\n")
+        self.camera.obj_cam_operation.frame_rate = self.text_frame_rate.get(1.0,tk.END)
+        self.camera.obj_cam_operation.frame_rate = self.camera.obj_cam_operation.frame_rate.rstrip("\n")
+        self.camera.obj_cam_operation.Set_parameter(self.camera.obj_cam_operation.frame_rate,self.camera.obj_cam_operation.exposure_time,self.camera.obj_cam_operation.gain)
 
         #ch:设置触发模式 | en:set trigger mode
     def set_triggermode(self):
-        global obj_cam_operation
         strMode = self.model_val.get()
-        obj_cam_operation.Set_trigger_mode(strMode)
+        self.camera.obj_cam_operation.Set_trigger_mode(strMode)
 
     #ch:设置触发命令 | en:set trigger software
     def trigger_once(self):
-        global triggercheck_val
-        global obj_cam_operation
-        nCommand = triggercheck_val.get()
-        obj_cam_operation.Trigger_once(nCommand)
+        nCommand = self.triggercheck_val.get()
+        self.camera.obj_cam_operation.Trigger_once(nCommand)

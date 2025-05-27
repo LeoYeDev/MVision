@@ -21,6 +21,8 @@ from tkinter import ttk
 
 sys.path.append("./lib/MvImport")
 from MvCameraControl_class import *
+sys.path.append("./src")
+from processimg import Processor
 
 def Async_raise(tid, exctype):
     tid = ctypes.c_long(tid)
@@ -281,8 +283,12 @@ class CameraOperation():
                 cdll.msvcrt.memcpy(byref(img_buff), stConvertParam.pDstBuffer, nConvertSize)
                 numArray = CameraOperation.Color_numpy(self,img_buff,self.st_frame_info.nWidth,self.st_frame_info.nHeight)
 
+            #图像处理
+            imgprocess = Processor(numArray)
+            result = imgprocess.process()
+            
             #合并OpenCV到Tkinter界面中
-            current_image = Image.fromarray(numArray).resize((800, 600), resample=Image.Resampling.LANCZOS) 
+            current_image = Image.fromarray(result).resize((800, 600), resample=Image.Resampling.LANCZOS) 
             imgtk = ImageTk.PhotoImage(image=current_image, master=root)
             panel.imgtk = imgtk       
             panel.config(image=imgtk) 

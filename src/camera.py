@@ -9,19 +9,17 @@ from MvCameraControl_class import *
 from CamOperation_class import *
 
 
-class CameraController:
+class CameraParam:
     def __init__(self):
-        global deviceList 
-        deviceList = MV_CC_DEVICE_INFO_LIST()
-        global tlayerType
-        tlayerType = MV_GIGE_DEVICE | MV_USB_DEVICE
-        global cam
-        cam = MvCamera()
-        global nSelCamIndex
-        nSelCamIndex = 0
-        global obj_cam_operation
-        obj_cam_operation = 0
-        global b_is_run
-        b_is_run = False
-    
-
+        # 设备列表
+        self.deviceList = MV_CC_DEVICE_INFO_LIST()
+        # 相机类型
+        self.tlayerType = MV_GIGE_DEVICE | MV_USB_DEVICE
+        #相机实例
+        self.cam = MvCamera()
+        #在deviceList中选择的相机索引
+        self.nSelCamIndex = 0
+        #相机操作
+        self.obj_cam_operation = 0
+        #判断相机是否在运行
+        self.b_is_run = False

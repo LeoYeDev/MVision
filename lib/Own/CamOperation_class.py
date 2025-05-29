@@ -284,8 +284,11 @@ class CameraOperation():
                 numArray = CameraOperation.Color_numpy(self,img_buff,self.st_frame_info.nWidth,self.st_frame_info.nHeight)
 
             #图像处理
+            # 将RGB格式转换为BGR格式
+            numArray = cv2.cvtColor(numArray, cv2.COLOR_RGB2BGR)
             imgprocess = Processor(numArray)
             result = imgprocess.process()
+            result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
             
             #合并OpenCV到Tkinter界面中
             current_image = Image.fromarray(result).resize((800, 600), resample=Image.Resampling.LANCZOS) 

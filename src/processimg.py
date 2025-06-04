@@ -1,6 +1,10 @@
 import cv2
 import numpy as np
 import time
+import sys
+
+sys.path.append("./src")
+from process_math import *
 
 class Processor:
     def __init__(self, img):
@@ -14,170 +18,249 @@ class Processor:
             'blue': ((90, 85,  13),  (160, 255, 255)),
             'yellow': ((10, 60, 13), (30, 255, 255)),
         }
-        # 最小检测面积
-        self.min_area = 2000
+        # 最小检测面积 
+        self.min_area = 50000
         # 轮廓逼近精度
         self.eps_factor = 0.02
-
-    def _is_trapezoid(self, approx):
-        # 判断四边形中是否有一对近似平行的边
-        if len(approx) != 4:
-            return False
-        # 计算每条边的方向向量
-        pts = approx.reshape(4,2)
-        vecs = [pts[(i+1)%4]-pts[i] for i in range(4)]
-        # 计算相邻边与对边的夹角
-        def is_parallel(v1, v2):
-            ang = abs(np.degrees(np.arctan2(v1[1],v1[0]) - np.arctan2(v2[1],v2[0])))
-            return ang<10 or abs(ang-180)<10
-        # 检查是否存在一对平行边但非所有边都平行（排除矩形/菱形）
-        parallels = [(i,(i+2)%4) for i in range(2) if is_parallel(vecs[i], vecs[i+2])]
-        return len(parallels)==1
+        # --- 用于控制绘制效果的参数 ---
+        self.font_scale = 1.5       # 字体缩放比例
+        self.text_thickness = 3     # 文本线条粗细
+        self.dot_radius = 10        # 中心点半径
+        self.line_thickness1 = 6    # 轮廓线的粗细 (例如原始轮廓)
+        self.line_thickness2 = 3    # 标记线的粗细 (例如最小外接矩形、凸包)
 
     def process(self):
-        img = self.img.copy()
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        img_display = self.img.copy()
+        hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV) # 使用 self.img 进行转换
+        
         # 合并所有颜色掩膜
         mask = None
         for lo, hi in self.hsv_ranges.values():
             m = cv2.inRange(hsv, np.array(lo), np.array(hi))
             mask = m if mask is None else cv2.bitwise_or(mask, m)
-        # 中值滤波 + 闭运算
-        mask = cv2.medianBlur(mask, 5)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT,(7,7))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-         
-        # 边缘检测 & 轮廓提取
-        edges, contours, _ = cv2.Canny(mask,50,150), *cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        h, w = img.shape[:2]
-        img_area = h * w
+        if mask is None:
+            return self.img
 
+        # 形态学操作 (保持上一版本中的平滑处理)
+        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+        mask = cv2.medianBlur(mask, 5)
+         
+        # 轮廓提取 (修正)
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        h_img, w_img = self.img.shape[:2] 
+        img_total_area = h_img * w_img    
+        
         for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < self.min_area:
+            area_cnt = cv2.contourArea(cnt) # 原始轮廓的面积
+            if area_cnt < self.min_area:    
                 continue
-            
-            # 计算最小外接矩形长宽以及边缘的周长面积
-            x,y,bw,bh = cv2.boundingRect(cnt)
-            aspect = max(bw/bh, bh/bw)
-            area = cv2.contourArea(cnt)
-            peri = cv2.arcLength(cnt, True)
-            ca_ratio = (peri * peri) / (area + 1e-6)
-            # print(f"Contour area: {area}, Perimeter: {peri}, CA ratio: {ca_ratio:.2f} , Aspect: {aspect:.2f}")
-            # # 画一个绿色的外接矩形（普通轴对齐矩形）
-            # cv2.rectangle(
-            #     img, 
-            #     pt1=(x,   y), 
-            #     pt2=(x+bw, y+bh), 
-            #     color=(0, 255, 0),   # BGR：绿色
-            #     thickness=2
-            # )
 
-            # 长宽比过大可能就是边框
-            # 面积占比过大可能就是边框
-            if aspect > 8 and area > 0.6 * img_area:
+            # --- 边框过滤逻辑 (保持不变) ---
+            x_br, y_br, w_br, bh_br = cv2.boundingRect(cnt) 
+            aspect_ratio = max(w_br/bh_br, bh_br/w_br) if bh_br != 0 and w_br != 0 else 0
+            perimeter_cnt = cv2.arcLength(cnt, True) # 原始轮廓的周长
+            compactness_ratio = (perimeter_cnt * perimeter_cnt) / (area_cnt + 1e-6) 
+            if aspect_ratio > 7 and area_cnt > (0.7 * img_total_area): 
                 continue
-            
-            # 周长–面积比过大可能就是边框
-            if ca_ratio > 500:   # 门槛可调
+            if compactness_ratio > 550: 
                 continue
                 
-
-            # 轮廓中心
+            # --- 基于原始轮廓 `cnt` 计算实际物理特征 ---
+            # 轮廓中心 (质心)
             M = cv2.moments(cnt)
-            cx = M['m10']/M['m00']; cy = M['m01']/M['m00']
-            print(f"Contour center: ({cx:.2f}, {cy:.2f})")
+            if M['m00'] == 0: continue 
+            cx_centroid = M['m10']/M['m00'] # 原始轮廓的质心X
+            cy_centroid = M['m01']/M['m00'] # 原始轮廓的质心Y
 
-            # PCA 主方向
-            pts = cnt.reshape(-1,2).astype(np.float32)
-            _, eigenvectors = cv2.PCACompute(pts, mean=None)
-            vx, vy = eigenvectors[0]
-
-            # 0–360° 角度
-            angle = (np.degrees(np.arctan2(vy, vx)) + 360) % 360
-
-            # 可视化：从中心沿主方向画一条线
-            length = 50
-            x2 = int(cx + length * vx)
-            y2 = int(cy + length * vy)
-            cv2.arrowedLine(img, (int(cx),int(cy)), (x2,y2), (0,255,255), 2)
-
-            # 标注文本
-            cv2.putText(img, f"degree:{angle:.1f}", (int(cx)+10, int(cy)+10),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
-    
-
-            # 轮廓拟合 (粗绿色)
-            cv2.drawContours(img, [cnt], -1, (0,255,0), 2)
-            
-            # 多边形逼近
-            peri   = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, self.eps_factor*peri, True)
-            v      = len(approx)
-
-            # 最小外接矩形 (紫色)
+            # 最小外接矩形 (基于原始轮廓 `cnt`)
             rect = cv2.minAreaRect(cnt)
-            # print (f"Rect: {rect}")
-            box  = cv2.boxPoints(rect).astype(int)
-            cv2.drawContours(img, [box], -1, (50,90,255), 1)
-
-            # 形状判断
-            if v == 3:
-                shape = 'triangle'
-            elif v == 4:
-                # 判断菱形 vs 梯形 vs 正方形/矩形
-                if self._is_trapezoid(approx):
-                    shape = 'trapezoid'
-                else:
-                    # 判断菱形：四边等长
-                    dists = [cv2.norm(approx[i]-approx[(i+1)%4]) for i in range(4)]
-                    if max(dists)-min(dists) < 0.1*max(dists):
-                        shape = 'diamond'
-                    else:
-                        # 长宽比区分正方形/矩形
-                        (x,y,w,h) = cv2.boundingRect(approx)
-                        shape = 'square' if abs(w-h)<0.1*max(w,h) else 'rectangle'
-            else:
-                # 顶点数很多且圆度高判定为圆形
-                circularity = 4*np.pi*area/(peri*peri) if peri>0 else 0
-                shape = 'circle' if circularity>0.7 else 'polygon'
-
-            # 中心与角度
-            (cx,cy),(_, _), angle = rect
-            cx, cy = map(int, (cx,cy))
-
-            # 获取中心颜色标签
-            hsv_val = hsv[cy, cx]
-            color_label = 'unknown'
-            for name, (lo,hi) in self.hsv_ranges.items():
-                lo,hi = np.array(lo), np.array(hi)
-                if np.all(hsv_val>=lo) and np.all(hsv_val<=hi):
-                    color_label = name
-                    break
-
-            # # 绘制中心点 & 文本
-            # cv2.circle(img, (cx,cy), 4, (0,0,255), -1)
-            # cv2.putText(img, f"c{color_label}", (cx-30, cy-10),
-            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-            # cv2.putText(img, f"{shape}", (cx-30, cy+10),
-            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1)
-            # cv2.putText(img, f"degree:{angle:.2f}", (cx-30, cy+30),
-            #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,0), 1)
+            (cx_rect_float, cy_rect_float), (w_rect, h_rect), angle_from_cv2 = rect 
+            box_points = cv2.boxPoints(rect).astype(int) 
+            cv2.drawContours(img_display, [box_points], -1, (128,0,128), self.line_thickness2 -1 if self.line_thickness2 > 1 else 1)
             
-        return img
+            # --- 基于凸包 `hull` 进行形状分析 ---
+            hull = cv2.convexHull(cnt) # 计算原始轮廓的凸包
+            perimeter_hull = cv2.arcLength(hull, True) # 凸包的周长
+            area_hull = cv2.contourArea(hull)          # 凸包的面积
+
+            # 对凸包进行多边形逼近
+            approx_hull = cv2.approxPolyDP(hull, self.eps_factor * perimeter_hull, True)
+            num_vertices_hull = len(approx_hull)
+            # 绘制原始轮廓 (蓝色)
+            # cv2.drawContours(img_display, [cnt], -1, (255,0，0), self.line_thickness1)
+            # 绘制凸包轮廓 (绿色)
+            cv2.drawContours(img_display, [hull], -1, (0,255,0), self.line_thickness2)
+            # 形状判断 (基于凸包的顶点数 `num_vertices_hull` 和 `approx_hull`)
+            shape_label = 'unknown'
+            approx_hull_reshaped = approx_hull.reshape(-1, 2) # 转换为 N x 2 形状
+
+            if num_vertices_hull == 3: shape_label = 'triangle'
+            elif num_vertices_hull == 4:
+                # --- 四边形判断逻辑修改区域 ---
+                side_lengths = [np.linalg.norm(approx_hull_reshaped[i] - approx_hull_reshaped[(i + 1) % 4]) for i in range(4)]
+                interior_angles = calculate_interior_angles(approx_hull_reshaped)
+
+                angle_tolerance = 15  # 内角与90度的容差（度）
+                side_relative_tolerance = 0.15 # 边长相对容差 (15%)
+
+                # 检查所有内角是否约等于90度
+                all_angles_approx_90 = False
+                if len(interior_angles) == 4: # 确保计算出4个角
+                    all_angles_approx_90 = all(abs(angle - 90) < angle_tolerance for angle in interior_angles)
+                
+                # 检查所有边是否约等长
+                all_sides_approx_equal = False
+                if side_lengths: # 确保边长列表不为空
+                    all_sides_approx_equal = (max(side_lengths) - min(side_lengths)) < side_relative_tolerance * (max(side_lengths) + 1e-6) # 加epsilon避免max为0
+
+                # 检查对边是否约等长 (side0 vs side2, side1 vs side3)
+                opposite_sides_approx_equal = False
+                if len(side_lengths) == 4:
+                    s0, s1, s2, s3 = side_lengths
+                    # 比较时，分母使用两条比较边中的较大者，或加上一个极小值避免除零
+                    cond1 = abs(s0 - s2) < side_relative_tolerance * max(s0, s2, 1e-6) 
+                    cond2 = abs(s1 - s3) < side_relative_tolerance * max(s1, s3, 1e-6)
+                    opposite_sides_approx_equal = cond1 and cond2
+
+                if all_sides_approx_equal and all_angles_approx_90:
+                    shape_label = 'square'  # 正方形：四边等长，四角相等且为90度
+                elif all_sides_approx_equal: # 隐含条件: 角度不都为90 (已被正方形条件覆盖)
+                    shape_label = 'diamond' # 菱形：四边等长
+                elif opposite_sides_approx_equal and all_angles_approx_90: # 隐含条件: 四边不都等长 (已被正方形条件覆盖)
+                    shape_label = 'rectangle' # 矩形：对边等长，四角相等且为90度
+                elif is_trapezoid(approx_hull): # 使用用户定义的梯形判断
+                    shape_label = 'trapezoid'
+            
+            elif num_vertices_hull == 6: 
+                shape_label = 'hexagon'
+            else: 
+                circularity_hull = 4*np.pi*area_hull/(perimeter_hull**2) if perimeter_hull > 0 else 0
+                shape_label = 'circle' if circularity_hull > 0.75 else f'polygon{num_vertices_hull}' 
+            
+            # --- 新的角度计算逻辑 ---
+            display_angle_text = "N/A"
+            calculated_angle_0_360 = -1.0 
+            ref_vec_start_pt, ref_vec_end_pt = None, None 
+
+            if shape_label != 'circle':
+                approx_hull_reshaped = approx_hull.reshape(-1, 2)
+
+                if shape_label == 'triangle':
+                    if num_vertices_hull == 3:
+                        # 计算三角形质心 (也可以用原始轮廓的质心 cx_centroid, cy_centroid)
+                        # M_hull = cv2.moments(approx_hull) # 用凸包的顶点计算质心
+                        # cx_triangle_center = M_hull['m10'] / (M_hull['m00'] + 1e-6)
+                        # cy_triangle_center = M_hull['m01'] / (M_hull['m00'] + 1e-6)
+                        triangle_center = np.array([cx_centroid, cy_centroid]) # 使用原始轮廓质心
+
+                        vertices = approx_hull_reshaped
+                        distances_to_center = [np.linalg.norm(v - triangle_center) for v in vertices]
+                        
+                        closest_vertex_idx = np.argmin(distances_to_center)
+                        ref_vec_end_pt = vertices[closest_vertex_idx] # 终点：离中心最近的顶点
+
+                        # 另外两个顶点构成一条边
+                        other_vertices_indices = [i for i in range(3) if i != closest_vertex_idx]
+                        p_side1 = vertices[other_vertices_indices[0]]
+                        p_side2 = vertices[other_vertices_indices[1]]
+                        ref_vec_start_pt = get_midpoint(p_side1, p_side2) # 起点：远边的中点
+                
+                elif shape_label == 'trapezoid':
+                    bases = find_trapezoid_bases(approx_hull_reshaped)
+                    if bases and bases[0] and bases[1]:
+                        (long_base_p1, long_base_p2), (short_base_p1, short_base_p2) = bases
+                        mid_long_base = get_midpoint(long_base_p1, long_base_p2)
+                        mid_short_base = get_midpoint(short_base_p1, short_base_p2)
+                        ref_vec_start_pt = mid_long_base
+                        ref_vec_end_pt = mid_short_base
+                
+                elif shape_label == 'hexagon':
+                    if num_vertices_hull == 6:
+                        parallel_side_pair = find_hexagon_parallel_side_pair(approx_hull_reshaped)
+                        if parallel_side_pair:
+                            (side1_p1, side1_p2), (side2_p1, side2_p2) = parallel_side_pair
+                            mid1 = get_midpoint(side1_p1, side1_p2)
+                            mid2 = get_midpoint(side2_p1, side2_p2)
+                            # 确保向量方向一致性，例如从y较小的中点指向y较大的中点
+                            if mid1[1] < mid2[1] or (mid1[1] == mid2[1] and mid1[0] < mid2[0]):
+                                ref_vec_start_pt = mid1
+                                ref_vec_end_pt = mid2
+                            else:
+                                ref_vec_start_pt = mid2
+                                ref_vec_end_pt = mid1
+                
+                elif shape_label in ['rectangle', 'square', 'diamond']:
+                    if num_vertices_hull == 4:
+                        mid1 = get_midpoint(approx_hull_reshaped[0], approx_hull_reshaped[1])
+                        mid2 = get_midpoint(approx_hull_reshaped[2], approx_hull_reshaped[3])
+                        if mid1[1] < mid2[1] or (mid1[1] == mid2[1] and mid1[0] < mid2[0]):
+                             ref_vec_start_pt = mid1; ref_vec_end_pt = mid2
+                        else: ref_vec_start_pt = mid2; ref_vec_end_pt = mid1
+                
+                if ref_vec_start_pt is not None and ref_vec_end_pt is not None:
+                    calculated_angle_0_360 = get_vector_angle_0_360(ref_vec_start_pt, ref_vec_end_pt)
+                    display_angle_text = f"{calculated_angle_0_360:.1f}"
+                    cv2.arrowedLine(img_display, tuple(ref_vec_start_pt.astype(int)), tuple(ref_vec_end_pt.astype(int)), 
+                                    (255, 100, 0), self.line_thickness2)
+
+            
+            # --- 绘制文本和标记 (保持不变) ---
+            cx_rect_int = int(cx_rect_float)
+            cy_rect_int = int(cy_rect_float)
+            color_label = 'N/A' 
+            if 0 <= cy_rect_int < h_img and 0 <= cx_rect_int < w_img: 
+                hsv_pixel_value = hsv[cy_rect_int, cx_rect_int]
+                for name, (lo, hi) in self.hsv_ranges.items():
+                    lo_np, hi_np = np.array(lo), np.array(hi)
+                    if np.all(hsv_pixel_value >= lo_np) and np.all(hsv_pixel_value <= hi_np):
+                        color_label = name.replace('1','').replace('2','') 
+                        break
+            
+            text_base_x = cx_rect_int + 20  
+            text_base_y = cy_rect_int - 20  
+            line_spacing = int(40 * self.font_scale) 
+
+            cv2.circle(img_display, (cx_rect_int, cy_rect_int), self.dot_radius, (0,0,255), -1) 
+
+            cv2.putText(img_display, f"C:{color_label}", (text_base_x, text_base_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
+            cv2.putText(img_display, f"S:{shape_label}", (text_base_x, text_base_y + line_spacing),
+                        cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
+            
+            if shape_label != 'circle':
+                cv2.putText(img_display, f"A:{display_angle_text}", (text_base_x, text_base_y + 2*line_spacing),
+                            cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
+
+        return img_display
 
 
 if __name__ == "__main__":
-    img = cv2.imread('150.jpg')
-    image_resize = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+    img_path = 'Y1.jpg'           
+    img_main = cv2.imread(img_path)
+
+    
+    if img_main.shape[2] == 4: # 处理PNG等带Alpha通道的图像
+        img_main = cv2.cvtColor(img_main, cv2.COLOR_BGRA2BGR)
 
     starttime = time.time()
-    processtest = Processor(image_resize)
-    result_img = processtest.process()
+    processor = Processor(img_main) 
+    result_img = processor.process()
     endtime = time.time()
-    print(f"Processing time: {endtime - starttime:.4f} seconds")
+    print(f"处理时间: {endtime - starttime:.4f} 秒")
 
-    cv2.imshow("Processed", result_img)
+    display_max_h, display_max_w = 800, 900 
+    res_h, res_w = result_img.shape[:2]
+    if res_h > display_max_h or res_w > display_max_w:
+        scale = min(display_max_h/res_h, display_max_w/res_w, 1.0) 
+        result_img_display = cv2.resize(result_img, None, fx=scale, fy=scale)
+    else:
+        result_img_display = result_img
+
+    cv2.imshow("out", result_img_display)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

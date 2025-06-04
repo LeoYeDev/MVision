@@ -7,7 +7,7 @@ def mouse_callback(event, x, y, flags, param):
         h, s, v = hsv[y, x]
         print(f'H:{h}, S:{s}, V:{v}')
  
-img = cv2.imread('test.jpg')      # 加载图片
+img = cv2.imread('150.jpg')      # 加载图片
 image_resize = cv2.resize(img, (0, 0), fx=0.4, fy=0.4)
 hsv = cv2.cvtColor(image_resize, cv2.COLOR_BGR2HSV)      # 将图片转为hsv
  

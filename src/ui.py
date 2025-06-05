@@ -163,7 +163,7 @@ class AppUI:
         self.device_list["value"] = devList
         self.device_list.current(0)
     
-        #ch:打开相机 | en:open device
+    #ch:打开相机 | en:open device
     def open_device(self):
         if True == self.camera.b_is_run:
             tkinter.messagebox.showinfo('show info','Camera is Running!')
@@ -224,12 +224,3 @@ class AppUI:
         self.camera.obj_cam_operation.frame_rate = self.camera.obj_cam_operation.frame_rate.rstrip("\n")
         self.camera.obj_cam_operation.Set_parameter(self.camera.obj_cam_operation.frame_rate,self.camera.obj_cam_operation.exposure_time,self.camera.obj_cam_operation.gain)
 
-        #ch:设置触发模式 | en:set trigger mode
-    def set_triggermode(self):
-        strMode = self.model_val.get()
-        self.camera.obj_cam_operation.Set_trigger_mode(strMode)
-
-    #ch:设置触发命令 | en:set trigger software
-    def trigger_once(self):
-        nCommand = self.triggercheck_val.get()
-        self.camera.obj_cam_operation.Trigger_once(nCommand)

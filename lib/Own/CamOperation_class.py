@@ -21,6 +21,7 @@ from tkinter import ttk
 
 sys.path.append("./lib/MvImport")
 from MvCameraControl_class import *
+from CameraParams_const import *
 sys.path.append("./src")
 from processimg import Processor
 
@@ -291,7 +292,7 @@ class CameraOperation():
             result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
             
             #合并OpenCV到Tkinter界面中
-            current_image = Image.fromarray(result).resize((800, 600), resample=Image.Resampling.LANCZOS) 
+            current_image = Image.fromarray(result).resize((800, 800), resample=Image.Resampling.LANCZOS) 
             imgtk = ImageTk.PhotoImage(image=current_image, master=root)
             panel.imgtk = imgtk       
             panel.config(image=imgtk) 

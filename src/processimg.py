@@ -2,12 +2,13 @@ import cv2
 import numpy as np
 import time
 import sys
+import os
 
 sys.path.append("./src")
 from process_math import *
 
 class Processor:
-    def __init__(self, img):
+    def __init__(self, img, calibration_file_path="1.txt"):
         self.img = img 
 
         # 定义几种常见颜色在 HSV 空间的阈值范围（示例）
@@ -29,6 +30,42 @@ class Processor:
         self.line_thickness1 = 6    # 轮廓线的粗细 (例如原始轮廓)
         self.line_thickness2 = 3    # 标记线的粗细 (例如最小外接矩形、凸包)
 
+        # --- 新增：从文件加载仿射变换矩阵 ---
+        self.affine_transform_matrix = None # 初始化为None
+        self._load_affine_matrix(calibration_file_path) # 调用加载方法
+
+    def _load_affine_matrix(self, filepath):
+        """从指定的txt文件加载3x3仿射变换矩阵。
+           文件格式：每行3个由逗号分隔的浮点数，共3行。
+        """
+        if not os.path.exists(filepath):
+            print(f"错误：标定文件 '{filepath}' 未找到！将使用单位矩阵进行坐标转换。")
+            self.affine_transform_matrix = np.eye(3, dtype=np.float32) # 使用单位矩阵作为备用
+            return
+
+        try:
+            matrix_data = []
+            with open(filepath, 'r') as f:
+                for line in f:
+                    # 移除可能的空白字符并按逗号分割
+                    parts = [float(p.strip()) for p in line.strip().split(',') if p.strip()]
+                    if len(parts) == 3:
+                        matrix_data.append(parts)
+            
+            if len(matrix_data) == 3:
+                self.affine_transform_matrix = np.array(matrix_data, dtype=np.float32)
+                if self.affine_transform_matrix.shape == (3,3):
+                    print(f"成功从 '{filepath}' 加载标定矩阵:\n{self.affine_transform_matrix}")
+                else:
+                    print(f"错误：从 '{filepath}' 读取的矩阵不是3x3形状！将使用单位矩阵。")
+                    self.affine_transform_matrix = np.eye(3, dtype=np.float32)
+            else:
+                print(f"错误：文件 '{filepath}' 内容格式不正确（应为3行，每行3个逗号分隔的数字）！将使用单位矩阵。")
+                self.affine_transform_matrix = np.eye(3, dtype=np.float32)
+        except Exception as e:
+            print(f"加载标定文件 '{filepath}' 时发生错误: {e}。将使用单位矩阵。")
+            self.affine_transform_matrix = np.eye(3, dtype=np.float32)
+
     def process(self):
         img_display = self.img.copy()
         hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV) # 使用 self.img 进行转换
@@ -40,7 +77,7 @@ class Processor:
             mask = m if mask is None else cv2.bitwise_or(mask, m)
         
         if mask is None:
-            return self.img
+            return img_display, [] 
 
         # 形态学操作 (保持上一版本中的平滑处理)
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -53,7 +90,10 @@ class Processor:
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         h_img, w_img = self.img.shape[:2] 
-        img_total_area = h_img * w_img    
+        img_total_area = h_img * w_img
+        
+        # --- 新增：用于存储所有检测到的物料信息，包括机械臂坐标 ---
+        detected_objects_info = []
         
         for cnt in contours:
             area_cnt = cv2.contourArea(cnt) # 原始轮廓的面积
@@ -208,7 +248,31 @@ class Processor:
                     cv2.arrowedLine(img_display, tuple(ref_vec_start_pt.astype(int)), tuple(ref_vec_end_pt.astype(int)), 
                                     (255, 100, 0), self.line_thickness2)
 
-            
+
+             # --- 坐标转换和显示 ---
+            robot_x_str, robot_y_str = "N/A", "N/A" # 初始化为N/A
+            pixel_x_to_transform = float(cx_rect_float) # 使用最小外接矩形中心作为待转换点
+            pixel_y_to_transform = float(cy_rect_float)
+
+            if self.affine_transform_matrix is not None:
+                # 应用仿射变换:
+                # X_robot = u*C[0,0] + v*C[1,0] + C[2,0]
+                # Y_robot = u*C[0,1] + v*C[1,1] + C[2,1]
+                # 注意C#数组和Python NumPy数组的索引方式可能不同，这里假设 self.affine_transform_matrix 
+                # 的存储方式与C#代码中 transformation_array[row, col] 对应。
+                # C# transformation_array[0,0] -> self.affine_transform_matrix[0,0] (u的X系数)
+                # C# transformation_array[1,0] -> self.affine_transform_matrix[1,0] (v的X系数)
+                # C# transformation_array[2,0] -> self.affine_transform_matrix[2,0] (X的平移)
+                
+                C = self.affine_transform_matrix
+                robot_x = pixel_x_to_transform * C[0,0] + pixel_y_to_transform * C[1,0] + C[2,0]
+                robot_y = pixel_x_to_transform * C[0,1] + pixel_y_to_transform * C[1,1] + C[2,1]
+                
+                robot_x_str = f"{robot_x:.2f}"
+                robot_y_str = f"{robot_y:.2f}"
+            else:
+                print("警告: 仿射变换矩阵未加载，无法进行坐标转换。")
+                
             # --- 绘制文本和标记 (保持不变) ---
             cx_rect_int = int(cx_rect_float)
             cy_rect_int = int(cy_rect_float)
@@ -224,23 +288,34 @@ class Processor:
             text_base_x = cx_rect_int + 20  
             text_base_y = cy_rect_int - 20  
             line_spacing = int(40 * self.font_scale) 
-
+            #(200,255,200)青色
             cv2.circle(img_display, (cx_rect_int, cy_rect_int), self.dot_radius, (0,0,255), -1) 
 
-            cv2.putText(img_display, f"C:{color_label}", (text_base_x, text_base_y),
+            cv2.putText(img_display, f"X-Y:({robot_x_str},{robot_y_str})", (text_base_x, text_base_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, self.font_scale * 0.9, (24,240,240), self.text_thickness, cv2.LINE_AA) # 稍小字体，不同颜色
+            cv2.putText(img_display, f"C:{color_label}", (text_base_x, text_base_y + line_spacing),
                         cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
-            cv2.putText(img_display, f"S:{shape_label}", (text_base_x, text_base_y + line_spacing),
+            cv2.putText(img_display, f"S:{shape_label}", (text_base_x, text_base_y + 2*line_spacing),
                         cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
-            
             if shape_label != 'circle':
-                cv2.putText(img_display, f"A:{display_angle_text}", (text_base_x, text_base_y + 2*line_spacing),
+                cv2.putText(img_display, f"A:{display_angle_text}", (text_base_x, text_base_y + 3*line_spacing),
                             cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
+                
+            # 存储信息 (如果需要返回给调用者)
+            current_object_data = {
+                "shape": shape_label,
+                "color": color_label,
+                "angle_deg": calculated_angle_0_360 if shape_label != 'circle' else -1.0, # -1.0 表示圆形
+                "robot_x": robot_x_str, # 存储为字符串以便显示 N/A
+                "robot_y": robot_y_str
+            }
+            detected_objects_info.append(current_object_data)
 
-        return img_display
+        return img_display, detected_objects_info
 
 
 if __name__ == "__main__":
-    img_path = 'Y1.jpg'           
+    img_path = '150.jpg'           
     img_main = cv2.imread(img_path)
 
     
@@ -249,11 +324,11 @@ if __name__ == "__main__":
 
     starttime = time.time()
     processor = Processor(img_main) 
-    result_img = processor.process()
+    result_img ,_ = processor.process()
     endtime = time.time()
     print(f"处理时间: {endtime - starttime:.4f} 秒")
 
-    display_max_h, display_max_w = 800, 900 
+    display_max_h, display_max_w = 800, 800 
     res_h, res_w = result_img.shape[:2]
     if res_h > display_max_h or res_w > display_max_w:
         scale = min(display_max_h/res_h, display_max_w/res_w, 1.0) 

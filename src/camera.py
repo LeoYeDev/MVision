@@ -8,7 +8,6 @@ from param import *
 from MvCameraControl_class import *
 from CamOperation_class import *
 
-
 class CameraParam:
     def __init__(self):
         # 设备列表

@@ -5,19 +5,27 @@ import sys
 import os
 
 sys.path.append("./src")
+sys.path.append("./config")
 from process_math import *
-
+from param import PLC_SERVER_HOST, PLC_SERVER_PORT, CALIBRATION_FILE_PATH, SCAN_AREA_FILES
 class Processor:
-    def __init__(self, img, calibration_file_path="1.txt"):
+    def __init__(self, img):
         self.img = img 
 
         # 定义几种常见颜色在 HSV 空间的阈值范围（示例）
+        # self.hsv_ranges = {
+        #     'red1': ((0, 100, 20),   (10, 255, 255)),
+        #     'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
+        #     'green': ((40,  50,  10),  (90,  255, 255)),
+        #     'blue': ((90, 85,  13),  (160, 255, 255)),
+        #     'yellow': ((10, 60, 13), (30, 255, 255)),
+        # }
         self.hsv_ranges = {
-            'red1': ((0, 100, 20),   (10, 255, 255)),
-            'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
+            'yellow': ((5, 60, 13), (30, 255, 255)),
+            'red1': ((0, 100, 20),   (100, 255, 255)),
+            # 'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
             'green': ((40,  50,  10),  (90,  255, 255)),
             'blue': ((90, 85,  13),  (160, 255, 255)),
-            'yellow': ((10, 60, 13), (30, 255, 255)),
         }
         # 最小检测面积 
         self.min_area = 50000
@@ -32,8 +40,9 @@ class Processor:
 
         # --- 新增：从文件加载仿射变换矩阵 ---
         self.affine_transform_matrix = None # 初始化为None
+        calibration_file_path=CALIBRATION_FILE_PATH
         self._load_affine_matrix(calibration_file_path) # 调用加载方法
-
+    
     def _load_affine_matrix(self, filepath):
         """从指定的txt文件加载3x3仿射变换矩阵。
            文件格式：每行3个由逗号分隔的浮点数，共3行。
@@ -55,7 +64,8 @@ class Processor:
             if len(matrix_data) == 3:
                 self.affine_transform_matrix = np.array(matrix_data, dtype=np.float32)
                 if self.affine_transform_matrix.shape == (3,3):
-                    print(f"成功从 '{filepath}' 加载标定矩阵:\n{self.affine_transform_matrix}")
+                    None
+                    # print(f"成功从 '{filepath}' 加载标定矩阵:\n{self.affine_transform_matrix}")
                 else:
                     print(f"错误：从 '{filepath}' 读取的矩阵不是3x3形状！将使用单位矩阵。")
                     self.affine_transform_matrix = np.eye(3, dtype=np.float32)
@@ -66,9 +76,25 @@ class Processor:
             print(f"加载标定文件 '{filepath}' 时发生错误: {e}。将使用单位矩阵。")
             self.affine_transform_matrix = np.eye(3, dtype=np.float32)
 
-    def process(self):
-        img_display = self.img.copy()
-        hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV) # 使用 self.img 进行转换
+    def process(self, roi_rect=None):
+        source_image = self.img.copy()
+        #roi_rect = [100, 100, 2000, 1500] if roi_rect is None else roi_rect # 默认ROI区域
+        # --- 【核心修改】应用ROI遮罩 ---
+        # roi_rect = None
+        roi_rect = [300, 200, 2000, 1500]
+        if roi_rect is not None:
+            x, y, w, h = roi_rect
+            # 1. 创建一个和原图一样大的黑色遮罩
+            mask_roi = np.zeros(source_image.shape[:2], dtype="uint8")
+            # 2. 在遮罩上绘制白色的ROI矩形
+            cv2.rectangle(mask_roi, (x, y), (x + w, y + h), 255, -1)
+            # 3. 将遮罩应用到原图上
+            source_image = cv2.bitwise_and(source_image, source_image, mask=mask_roi)
+        else:
+            x,y,w,h= 0, 0, source_image.shape[1], source_image.shape[0] # 如果没有ROI，使用全图
+
+        img_display = source_image.copy() # 用于绘制结果的图像
+        hsv = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV)
         
         # 合并所有颜色掩膜
         mask = None
@@ -94,6 +120,7 @@ class Processor:
         
         # --- 新增：用于存储所有检测到的物料信息，包括机械臂坐标 ---
         detected_objects_info = []
+        detected_objects_info.clear() # 确保每次处理前清空
         
         for cnt in contours:
             area_cnt = cv2.contourArea(cnt) # 原始轮廓的面积
@@ -267,7 +294,8 @@ class Processor:
                 C = self.affine_transform_matrix
                 robot_x = pixel_x_to_transform * C[0,0] + pixel_y_to_transform * C[1,0] + C[2,0]
                 robot_y = pixel_x_to_transform * C[0,1] + pixel_y_to_transform * C[1,1] + C[2,1]
-                
+                robot_x = -robot_x # 注意：C#代码中Y轴方向是向下的，这里需要取反
+                robot_y = -robot_y
                 robot_x_str = f"{robot_x:.2f}"
                 robot_y_str = f"{robot_y:.2f}"
             else:
@@ -287,7 +315,9 @@ class Processor:
             
             text_base_x = cx_rect_int + 20  
             text_base_y = cy_rect_int - 20  
-            line_spacing = int(40 * self.font_scale) 
+            line_spacing = int(40 * self.font_scale)
+
+            cv2.rectangle(img_display, (x, y), (x + w, y + h), (0, 255, 255), 4) # 黄色，粗线条
             #(200,255,200)青色
             cv2.circle(img_display, (cx_rect_int, cy_rect_int), self.dot_radius, (0,0,255), -1) 
 
@@ -306,18 +336,18 @@ class Processor:
                 "shape": shape_label,
                 "color": color_label,
                 "angle_deg": calculated_angle_0_360 if shape_label != 'circle' else -1.0, # -1.0 表示圆形
-                "robot_x": robot_x_str, # 存储为字符串以便显示 N/A
-                "robot_y": robot_y_str
+                "robot_x": robot_x, 
+                "robot_y": robot_y
             }
             detected_objects_info.append(current_object_data)
-
+            print(f"检测到物体: {current_object_data}")
         return img_display, detected_objects_info
 
 
 if __name__ == "__main__":
-    img_path = '150.jpg'           
+    img_path = 'Y1.jpg'           
     img_main = cv2.imread(img_path)
-
+    print(f"读取图像: {img_path}, 大小: {img_main.shape[1]}x{img_main.shape[0]}")
     
     if img_main.shape[2] == 4: # 处理PNG等带Alpha通道的图像
         img_main = cv2.cvtColor(img_main, cv2.COLOR_BGRA2BGR)
@@ -328,14 +358,14 @@ if __name__ == "__main__":
     endtime = time.time()
     print(f"处理时间: {endtime - starttime:.4f} 秒")
 
-    display_max_h, display_max_w = 800, 800 
+    display_max_h, display_max_w = 600, 800 
     res_h, res_w = result_img.shape[:2]
     if res_h > display_max_h or res_w > display_max_w:
         scale = min(display_max_h/res_h, display_max_w/res_w, 1.0) 
         result_img_display = cv2.resize(result_img, None, fx=scale, fy=scale)
     else:
         result_img_display = result_img
-
+    print(f"显示图像大小: {result_img_display.shape[1]}x{result_img_display.shape[0]}")
     cv2.imshow("out", result_img_display)
     cv2.waitKey(0)
     cv2.destroyAllWindows()

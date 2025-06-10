@@ -1,205 +1,402 @@
+# src/tcp_server.py
 import socket
 import threading
 import time
+import queue
 
-class PLCCommunicator:
-    def __init__(self, host, port, camera_trigger_callback):
-        """
-        初始化TCP服务器。
-        :param host: 服务器主机IP (e.g., '0.0.0.0')
-        :param port: 服务器端口 (e.g., 2000 from C# code)
-        :param camera_trigger_callback: 接收到PLC的 "START" 或 "SORT" 等拍照指令时调用的函数。
-                                       此回调应返回一个检测到的物料信息列表 (每个元素是已格式化的字符串)。
-        """
+# --- 数据格式化函数 (参照C#代码中的格式) ---
+def format_object_data_for_plc(detected_object_info):
+    """
+    将 processimg.py 中检测到的单个对象信息格式化为PLC易于解析的字符串。
+    C#格式示例:
+    方形/矩形: "0xS,X坐标,Y坐标,角度,颜色代码" (例如: "0xS,-100.50,+200.75,-045.00,R")
+    圆形: "0xC,X坐标,Y坐标,,+000.00,颜色代码" (例如: "0xC,-050.20,+150.00,,+000.00,B") (注意角度前多一个逗号)
+    六边形: "0xH,X坐标,Y坐标,角度,颜色代码"
+
+    参数:
+        detected_object_info (dict): 从 processimg.py 的 process() 方法返回的单个对象信息字典。
+                                     包含 "shape", "color", "robot_x", "robot_y", "angle_deg"。
+    返回:
+        str: 格式化后的字符串，准备发送给PLC。
+    """
+    shape = detected_object_info.get("shape", "unknown")
+    # processimg.py 返回的颜色是 "red", "blue" 等，取首字母大写作为颜色代码
+    color_code = detected_object_info.get("color", "N/A")[0].upper() if detected_object_info.get("color") != "N/A" else "U"
+
+    # processimg.py 返回的 robot_x, robot_y 已经是带正负号和两位小数的字符串
+    robot_x = detected_object_info.get("robot_x", "+000.00")
+    robot_y = detected_object_info.get("robot_y", "+000.00")
+    robot_x_str = f"{robot_x:+07.2f}"
+    robot_y_str = f"{robot_y:+07.2f}"
+
+    angle_deg = detected_object_info.get("angle_deg", 0.0)
+
+    prefix = "0xU,"  # U for Unknown, 默认前缀
+    angle_str_formatted = ""
+
+    # 根据C#代码中的格式调整角度和前缀
+    if shape in ["square", "rectangle", "diamond", "trapezoid"]: # 假设这些都用 S，梯形也用S处理角度
+        prefix = "0xS"
+        # C# 逻辑: if (SAngle >= 0) strSAngle = "-" + SAngle.ToString("000.00");
+        # else strSAngle = "+" + (0 - SAngle).ToString("000.00");
+        # Python 实现: angle_deg 是 0-360 度。C#的SAngle可能是调整过的。
+        # 我们这里直接格式化 processimg.py 返回的 0-360 度角。
+        # 如果PLC需要特定范围或符号转换，需在此调整。
+        # 假设PLC接收的是带符号的度数，总共7位（含符号和小数点），两位小数。
+        # 例如 -45.00 -> "-045.00", 90.00 -> "-090.00" (如果定义正角为负号)
+        # 为与C#例子中SAngle的 +/- 逻辑对应，我们假设一个转换规则：
+        # 若 angle_deg 在 [0, 180]，视为 SAngle = -angle_deg
+        # 若 angle_deg 在 (180, 360)，视为 SAngle = +(360 - angle_deg) -> 错误，C#是简单的符号反转
+        # 假设C#中的 SAngle 就是简单的 +/- angle_deg，但显示时符号可能反了。
+        # 我们直接格式化 angle_deg，PLC端需要理解这个0-360的角度。
+        # 或者，如果严格按照C#的输出格式，需要知道SAngle如何从原始角度计算。
+        # 暂时采用直接格式化0-360角度，带正负号（以+代表正）
+        if 0<= angle_deg <= 180:
+            angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
+        else:
+            angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
+        angle_deg = angle_deg * 999.9 / 180
+        # angle_deg = -angle_deg
+        angle_str_formatted = f"{angle_deg:+07.2f}" # 例如 +045.00, +270.00
+
+    elif shape == "circle":
+        prefix = "0xC"
+        angle_str_formatted = "+000.00"  # 注意，根据C#为圆形特意增加一个逗号，然后是固定角度字符串
+                                        # "0xC," + strRealPointX + "," + strRealPointY + "," + ",+000.00" + strRealColor
+
+    elif shape == "hexagon":
+        prefix = "0xH"
+        if 0<= angle_deg <= 180:
+            angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
+        else:
+            angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
+        angle_str_formatted = f"{angle_deg:+07.2f}" # 同方形处理
+    print(f"格式化对象: {shape}, 位置: ({robot_x_str}, {robot_y_str}), 角度: {angle_str_formatted}, 颜色: {color_code}")
+    # 最终字符串拼接
+    return f"{prefix},{robot_x_str},{robot_y_str},{angle_str_formatted},{color_code}"
+
+
+def format_error_for_plc(area_identifier_char):
+    """
+    格式化错误信息。
+    C#中的格式: "0xError,Pos" + Workpiece_Area[SortIndex]; (Workpiece_Area是 'A', 'B', 'C', 'D')
+    """
+    return f"0xError,Pos{area_identifier_char}"
+
+def format_over_for_plc():
+    """
+    格式化 "Over" 信息。
+    C#中的格式: "0xOver" (当工件在纠偏时未移动或符合要求时发送)
+    """
+    return "0xOver"
+
+
+class PLCServer:
+    def __init__(self, host, port, ui_update_callback=None, request_process_callback=None):
         self.host = host
         self.port = port
-        self.camera_trigger_callback = camera_trigger_callback
         self.server_socket = None
-        self.client_connection = None # C#代码似乎只处理一个PLC连接
-        self.client_address = None
+        self.client_handlers = {} #  {client_socket: ClientHandlerThread}
         self.running = False
-        self.receive_thread = None
-        self.plc_expects_data = False # 标志位，表示是否已发送第一条数据，等待PLC的"OK"
-        self.data_to_send_queue = [] # 存储待发送的物料信息
-        self.data_send_lock = threading.Lock() # 保护 data_to_send_queue
+        self.ui_update_callback = ui_update_callback  # GUI日志更新回调
+        self.request_process_callback = request_process_callback # 回调AppUI触发检测/相机操作
 
-    def _format_object_info_for_plc(self, detected_objects):
-        """将Processor返回的结构化数据格式化为PLC期望的字符串列表。"""
-        if not detected_objects:
-            return []
-        
-        formatted_strings = []
-        for obj_info in detected_objects:
-            shape_char = 'P' # 默认多边形
-            if obj_info['shape'] == 'square': shape_char = 'S'
-            elif obj_info['shape'] == 'circle': shape_char = 'C'
-            elif obj_info['shape'] == 'hexagon': shape_char = 'H'
-            elif obj_info['shape'] == 'triangle': shape_char = 'T'
-            elif obj_info['shape'] == 'rectangle': shape_char = 'R'
-            elif obj_info['shape'] == 'diamond': shape_char = 'D'
-            
-            robot_x_str = obj_info.get('robot_x', "N/A")
-            robot_y_str = obj_info.get('robot_y', "N/A")
-            angle_val = obj_info.get('angle_deg', -1.0)
-            color_simple = obj_info.get('color', "N/A").lower()
+        # 这些状态量现在移到 ClientHandlerThread 中，因为它们是每个客户端独立的
+        # self.current_area_num = 0
+        # self.workpiece_information_to_send = [] # 存储当前批次待发送的工件信息
+        # self.current_send_index = 0
 
-            # 坐标格式化: +/-XXX.XX (与C#代码的ToString("000.00")逻辑对应)
-            try: rx = float(robot_x_str); robot_x_str = f"{rx:+07.2f}"
-            except: pass # 如果是N/A或Err，保持原样
-            try: ry = float(robot_y_str); robot_y_str = f"{ry:+07.2f}"
-            except: pass
+    def log(self, message):
+        """记录日志，并通过回调更新UI。"""
+        print(message) # 打印到控制台
+        if self.ui_update_callback:
+            try:
+                self.ui_update_callback(message)
+            except Exception as e:
+                print(f"Error in ui_update_callback: {e}")
 
-            angle_str = "+000.00" # 默认值，与C#中圆形的角度发送格式一致
-            if shape_char != 'C' and angle_val != -1.0 and angle_val is not None :
-                try: 
-                    ang = float(angle_val)
-                    # C#代码对角度正负处理: if (SAngle >= 0) strSAngle = "-" + SAngle.ToString("000.00"); else strSAngle = "+" + (0-SAngle).ToString("000.00");
-                    # 这意味着正角度发送为"-", 负角度发送为"+". 这很不寻常，但我们遵循它。
-                    # 我们的 calculated_angle_0_360 总是正的。
-                    # 如果要完全匹配C#的奇怪逻辑，需要调整。
-                    # 这里我们先用一种更标准的 +/- AAA.AA 格式，假设0-360度。
-                    # angle_str = f"{ang:+07.2f}" # 例如 +090.00
-                    # 按照C#逻辑 (SAngle是OpenCV的原始角度)
-                    # 这里我们用的是0-360，假设PLC期望的是这个范围的带符号或特定格式
-                    # C#的 SAgle 对于正方形，有一个特殊的调整逻辑。
-                    # 我们用0-360度的calculated_angle_0_360，发送时统一格式
-                    angle_str = f"{ang:+07.2f}" # 假设我们发送的是标准带符号的角度
-                except: pass
-
-            color_char_plc = 'U' # Unknown
-            if 'red' in color_simple: color_char_plc = 'R'
-            elif 'green' in color_simple: color_char_plc = 'G' # C#用Y代表黄色，B代表蓝色。绿色没有明确对应。
-            elif 'blue' in color_simple: color_char_plc = 'B'
-            elif 'yellow' in color_simple: color_char_plc = 'Y'
-            
-            # 格式: "0x{Shape},{RobotX},{RobotY},{Angle},{Color}"
-            msg = f"0x{shape_char},{robot_x_str},{robot_y_str},{angle_str},{color_char_plc}"
-            formatted_strings.append(msg)
-        return formatted_strings
-
-    def _handle_plc_communication(self):
-        print(f"[TCP Comm] PLC {self.client_address} 通信线程已启动。")
-        conn = self.client_connection
-        try:
-            while self.running and conn:
-                try:
-                    conn.settimeout(1.0)
-                    data = conn.recv(1024)
-                    if not data:
-                        print(f"[TCP Comm] PLC {self.client_address} 已断开 (无数据)。")
-                        break
-                    
-                    message = data.decode('utf-8').strip()
-                    print(f"[TCP Comm] 从 PLC 收到: {message}")
-
-                    if message.upper() == "START" or message.upper() == "SORT":
-                        print("[TCP Comm] 收到 START/SORT 触发信号。")
-                        if self.camera_trigger_callback:
-                            detected_data_list = self.camera_trigger_callback() # 这应该返回字典列表
-                            
-                            formatted_strings_to_send = self._format_object_info_for_plc(detected_data_list)
-
-                            with self.data_send_lock:
-                                self.data_to_send_queue = formatted_strings_to_send
-                                print(f"[TCP Comm] 准备发送 {len(self.data_to_send_queue)} 条物料信息。")
-
-                            if self.data_to_send_queue:
-                                first_message = self.data_to_send_queue.pop(0) # 取出第一条
-                                print(f"[TCP Comm] 发送给 PLC: {first_message}")
-                                conn.sendall((first_message + "\r\n").encode('utf-8'))
-                                if not self.data_to_send_queue: # 如果只有一条，发送完就结束
-                                    conn.sendall("END_OF_DATA\r\n".encode('utf-8'))
-                                    print("[TCP Comm] END_OF_DATA 已发送 (单条数据)。")
-                            else: # 没有检测到物料
-                                conn.sendall("NO_DATA\r\n".encode('utf-8')) # 或其他PLC约定的空消息
-                                print("[TCP Comm] 未检测到数据，已通知PLC。")
-                    
-                    elif message.upper() == "OK":
-                        print("[TCP Comm] PLC 回复 OK。")
-                        with self.data_send_lock:
-                            if self.data_to_send_queue:
-                                next_message = self.data_to_send_queue.pop(0)
-                                print(f"[TCP Comm] 发送给 PLC: {next_message}")
-                                conn.sendall((next_message + "\r\n").encode('utf-8'))
-                                if not self.data_to_send_queue: # 如果这是最后一条
-                                    conn.sendall("END_OF_DATA\r\n".encode('utf-8'))
-                                    print("[TCP Comm] END_OF_DATA 已发送 (多条数据完毕)。")
-                            else:
-                                print("[TCP Comm] 收到OK，但没有更多数据待发送。")
-                                # conn.sendall("END_OF_DATA\r\n".encode('utf-8')) # 也可再发一次结束
-
-                    elif message.upper() == "STOP":
-                        print("[TCP Comm] 收到 PLC 的 STOP 命令。")
-                        # 此处可以添加停止相机采集等的逻辑，或通知主程序
-                        # self.running = False # 如果STOP意味着服务器也停止
-
-                    # 根据C#代码，视觉系统还可能发送 "0xOver" 或 "0xError,PosX"
-                    # 这些通常是基于PLC的特定请求（如"Sort"后的偏移检测）或视觉系统自身的状态判断
-                    # 这里我们主要处理由"START"触发的检测流程
-
-                except socket.timeout:
-                    continue
-                except socket.error as e:
-                    print(f"[TCP Comm] Socket 错误: {e}")
-                    break
-                except Exception as e:
-                    print(f"[TCP Comm] 处理消息时发生错误: {e}")
-                    break
-        finally:
-            print(f"[TCP Comm] 与 PLC {self.client_address} 的通信结束。")
-            if conn:
-                conn.close()
-            self.client_connection = None # 清理连接
-
-    def start_server(self):
+    def start(self):
+        """启动TCP服务器并开始监听连接。"""
         if self.running:
-            print("[TCP Server] 服务器已在运行。")
-            return
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.log("服务器已在运行中。")
+            return True
         try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(1)
+            self.server_socket.listen(1) # C#中是listen(1)，通常可以更大，如5
             self.running = True
-            print(f"[TCP Server] 服务器启动，监听 {self.host}:{self.port}...")
-            # 主监听循环
-            while self.running:
-                try:
-                    self.server_socket.settimeout(1.0)
-                    if self.client_connection is None: # 只接受一个PLC连接
-                        conn, addr = self.server_socket.accept()
-                        print(f"[TCP Server] PLC {addr} 已连接。")
-                        self.client_connection = conn
-                        self.client_address = addr
-                        # 为该连接启动通信处理线程
-                        self.receive_thread = threading.Thread(target=self._handle_plc_communication)
-                        self.receive_thread.daemon = True
-                        self.receive_thread.start()
-                    else:
-                        time.sleep(0.5) # 如果已有连接，则短暂等待
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.running: print(f"[TCP Server] 接受连接时出错: {e}")
-                    break 
-        except Exception as e:
-            print(f"[TCP Server] 启动失败: {e}")
-            self.running = False
-        finally:
-            self.stop_server() # 确保资源释放
+            self.log(f"TCP服务器启动，监听于 {self.host}:{self.port}")
 
-    def stop_server(self):
-        print("[TCP Server] 正在停止服务器...")
+            accept_thread = threading.Thread(target=self._accept_connections, daemon=True)
+            accept_thread.start()
+            return True
+        except Exception as e:
+            self.log(f"启动服务器失败: {e}")
+            self.running = False
+            return False
+
+    def stop(self):
+        """停止TCP服务器，关闭所有连接。"""
+        self.log("正在停止服务器...")
         self.running = False
-        if self.client_connection:
-            try: self.client_connection.close()
-            except: pass
-            self.client_connection = None
-        if self.receive_thread and self.receive_thread.is_alive():
-            self.receive_thread.join(timeout=1.0)
+        # 关闭所有客户端连接
+        for client_socket, handler_thread in list(self.client_handlers.items()): # list() to avoid runtime dict change
+            try:
+                handler_thread.stop_flag = True # 通知线程停止
+                if client_socket:
+                    client_socket.shutdown(socket.SHUT_RDWR) # 尝试优雅关闭
+                    client_socket.close()
+                handler_thread.join(timeout=2.0) # 等待线程退出
+            except Exception as e:
+                self.log(f"关闭客户端 {handler_thread.client_address} 连接时出错: {e}")
+        
+        self.client_handlers.clear()
+
         if self.server_socket:
-            try: self.server_socket.close()
-            except: pass
+            try:
+                self.server_socket.close() # 关闭服务器套接字
+            except Exception as e:
+                self.log(f"关闭服务器套接字时出错: {e}")
             self.server_socket = None
-        print("[TCP Server] 服务器已停止。")
+        self.log("服务器已停止。")
+
+    def on_client_disconnected(self, client_socket):
+        """当客户端处理线程检测到断开时调用。"""
+        if client_socket in self.client_handlers:
+            del self.client_handlers[client_socket]
+            self.log(f"客户端 {client_socket.getpeername() if client_socket.fileno() != -1 else 'unknown'} 的处理器已移除。")
+
+
+    def send_results_to_plc(self, client_socket, detected_objects_list, area_num_for_this_detection):
+        """
+        由AppUI调用，用于将一批检测到的工件信息发送给指定的PLC客户端。
+        这个方法会找到对应的ClientHandlerThread实例并调用其方法来处理发送。
+        """
+        if client_socket in self.client_handlers:
+            handler = self.client_handlers[client_socket]
+            area_char = chr(ord('A') + area_num_for_this_detection - 1) if 1 <= area_num_for_this_detection <= 4 else 'X'
+            
+            formatted_results = []
+            if detected_objects_list: # 如果有检测到物体
+                for obj_info in detected_objects_list:
+                    formatted_results.append(format_object_data_for_plc(obj_info))
+            
+            # 即使没有物体，也需要通知handler，它可能需要发送一个特定的空消息或不发送
+            # C#中，若无物体，Workpiece_Deetection1 似乎不发送，等待下一个指令
+            # 我们让 handler 自己决定如何处理空列表
+            handler.set_workpiece_data_to_send(formatted_results)
+        else:
+            self.log(f"错误: 尝试发送结果给一个未知的或已断开的PLC客户端 ({client_socket})")
+
+    def send_specific_message_to_plc(self, client_socket, message_type, area_char=None):
+        """
+        由AppUI调用，用于发送特定控制消息，如 "0xError,PosA" 或 "0xOver"。
+        """
+        if client_socket in self.client_handlers:
+            handler = self.client_handlers[client_socket]
+            if message_type == "ERROR_POS":
+                if area_char:
+                    error_msg = format_error_for_plc(area_char)
+                    handler.send_message(error_msg)
+                    handler.movement_flag = True # C#逻辑：发送Error后设置MovementFlag
+                else:
+                    self.log("错误：发送ERROR_POS时未提供区域标识。")
+            elif message_type == "OVER":
+                # C#逻辑：发送Over前会递增SortIndex，这里SortIndex由handler内部管理
+                handler.send_message(format_over_for_plc())
+            # 可以扩展其他特定消息
+        else:
+            self.log(f"错误: 尝试发送特定消息给一个未知的或已断开的PLC客户端 ({client_socket})")
+
+    def _accept_connections(self):
+        """在单独线程中接受新的客户端连接。"""
+        while self.running:
+            try:
+                client_socket, client_address = self.server_socket.accept()
+                if not self.running: # 解决停止服务器时accept可能引发的问题
+                    client_socket.close()
+                    break
+                
+                self.log(f"PLC {client_address} 已连接。")
+                
+                handler_thread = ClientHandlerThread(client_socket, client_address, self)
+                self.client_handlers[client_socket] = handler_thread
+                handler_thread.start()
+
+            except socket.timeout: # 如果设置了超时
+                continue
+            except OSError as e: # 服务器套接字已关闭时会发生
+                if self.running: # 只有在服务器应该还在运行时才记录为错误
+                    self.log(f"接受连接时发生OSError: {e}")
+                break # 服务器套接字可能已关闭，退出循环
+            except Exception as e:
+                if self.running:
+                    self.log(f"接受连接时发生未知错误: {e}")
+                break
+        self.log("服务器监听线程已停止。")
+
+    
+
+
+class ClientHandlerThread(threading.Thread):
+    def __init__(self, client_socket, client_address, server_instance):
+        super().__init__(daemon=True)
+        self.client_socket = client_socket
+        self.client_address = client_address
+        self.server = server_instance # 回调PLCServer的方法，如log, on_client_disconnected
+        self.running = True
+        self.stop_flag = False # 用于外部请求停止
+
+        # 每个客户端独立的状态
+        self.current_area_num = 0 # 由 "Start" 指令更新
+        self.workpiece_information_to_send = [] # 存储当前批次待发送的格式化后的工件字符串
+        self.current_send_index = 0
+        self.movement_flag = False # 对应C#中的MovementFlag，用于纠偏逻辑
+        self.sort_index = 0 # 对应C#中的SortIndex，与AllWorkpiece_Information相关，这里可能用途不同
+
+    def log(self, message):
+        """通过服务器实例记录日志。"""
+        self.server.log(f"[PLC {self.client_address}] {message}")
+
+    def send_message(self, message):
+        """向连接的PLC发送消息。"""
+        if not self.running or self.stop_flag:
+            return False
+        try:
+            # C#代码中不加换行符，直接发送字节
+            # self.client_socket.sendall((message + "\n").encode('utf-8'))
+            self.client_socket.sendall(message.encode('utf-8'))
+            self.log(f"已发送: {message}")
+            return True
+        except socket.error as e:
+            self.log(f"发送数据失败: {e}")
+            self.running = False # 发送失败通常意味着连接问题
+            return False
+        except Exception as e:
+            self.log(f"发送数据时发生未知错误: {e}")
+            self.running = False
+            return False
+            
+    def set_workpiece_data_to_send(self, formatted_data_list):
+        """由PLCServer调用，设置当前批次要发送的工件数据。"""
+        self.workpiece_information_to_send = formatted_data_list
+        self.current_send_index = 0
+        if self.workpiece_information_to_send:
+            # 发送第一条数据
+            if self.send_message(self.workpiece_information_to_send[self.current_send_index]):
+                self.current_send_index += 1
+            else:
+                # 发送失败，清除待发送列表
+                self.workpiece_information_to_send = []
+                self.current_send_index = 0
+        else:
+            self.log("没有检测到工件数据需要发送。")
+            # 根据C#逻辑，若无工件，不主动发送，等待PLC指令
+
+
+    def run(self):
+        """处理来自单个PLC客户端的通信。"""
+        self.log("客户端处理线程已启动。")
+        try:
+            while self.running and not self.stop_flag:
+                try:
+                    # C#代码中 buffer = new byte[1024 * 1024 * 2]; r = socketSend.Receive(buffer);
+                    # string str = Encoding.UTF8.GetString(buffer, 2, r); // 跳过了前2字节
+                    # Python中简单接收
+                    data = self.client_socket.recv(1024) # 接收缓冲区大小
+                    if not data:
+                        self.log("PLC断开连接 (收到空数据)。")
+                        self.running = False
+                        break
+        
+                    # C#中跳过了前2字节。这里假设PLC发送的指令不包含那2字节，直接是命令字符串。
+                    # 如果PLC确实发送了包含长度或其他信息的前缀字节，需要在此处处理。
+                    # 假设直接是命令字符串
+                    data = data[2:]  # C#中跳过了前2字节，这里假设PLC发送的指令包含那2字节
+                    command = data.decode('utf-8').strip()
+                    self.log(f"\n收到指令: '{command}'\n")
+
+                    if not self.server.request_process_callback:
+                        self.log("错误：未设置 request_process_callback，无法处理PLC指令。")
+                        time.sleep(1)
+                        continue
+
+                    # --- 指令处理 ---
+                    if command.startswith("Start"): # C# 是 GetString(buffer, 2, 5) == "Start"
+                        # 假设"Start"后面可能跟参数，或就是"Start"
+                        self.current_area_num = (self.current_area_num % 4) + 1 # 1,2,3,4 循环，同C#
+                        self.workpiece_information_to_send = [] # 清空上一批次
+                        self.current_send_index = 0
+                        self.movement_flag = False # C#中Start会重置MovementFlag
+                        self.log(f"-------处理'Start'指令，当前区域: {self.current_area_num}")
+                        self.server.request_process_callback(
+                            client_socket=self.client_socket,
+                            command="START",
+                            area_num=self.current_area_num
+                        )
+                        # 结果将通过 PLCServer.send_results_to_plc -> self.set_workpiece_data_to_send 来设置和发送第一条
+
+                    elif command.startswith("Sort"): # C# 是 GetString(buffer, 2, 4) == "Sort"
+                        self.log(f"------处理'Sort'指令，MovementFlag: {self.movement_flag}, SortIndex: {self.sort_index}")
+                        self.workpiece_information_to_send = []
+                        self.current_send_index = 0
+                        
+                        detection_mode_for_sort = "REALIGNMENT_RE_DETECTION" if self.movement_flag else "REALIGNMENT_MOVEMENT_DETECTION"
+                        self.movement_flag = False # 重置
+
+                        self.server.request_process_callback(
+                            client_socket=self.client_socket,
+                            command="SORT", # 或者更细分的指令类型
+                            area_num=self.current_area_num, # Sort通常在当前区域
+                            sort_payload = {"detection_mode": detection_mode_for_sort, "sort_index": self.sort_index}
+                        )
+                        # C#中SortIndex在发送Over前递增，这里也需要在AppUI回调后处理
+
+                    elif command.startswith("Stop"): # C# 是 GetString(buffer, 2, 4) == "Stop"
+                        self.log("------处理'Stop'指令。")
+                        self.workpiece_information_to_send = [] # 清空
+                        self.current_send_index = 0
+                        # self.current_area_num = 0 # C# 中重置AreaNum
+                        # self.sort_index = 0 # C# 中重置AllWorkpieceIndex/SortIndex
+                        self.server.request_process_callback(client_socket=self.client_socket, command="STOP")
+                        # C#中 IscontinueGrabing = false; ScanPointNum = 0; AllWorkpieceIndex = 0; AreaNum = 0;
+                        # 这些状态的重置应在 AppUI 的回调中处理相机和应用状态
+
+                    elif command.startswith("OK"): # C# 是 GetString(buffer, 2, 2) == "OK"
+                        self.log("------处理'OK'指令。")
+                        if self.current_send_index < len(self.workpiece_information_to_send):
+                            next_data_to_send = self.workpiece_information_to_send[self.current_send_index]
+                            if self.send_message(next_data_to_send):
+                                self.current_send_index += 1
+                            else:
+                                self.workpiece_information_to_send = [] # 发送失败则清空
+                                self.current_send_index = 0
+                        else:
+                            self.log("所有工件信息已发送完毕。")
+                            self.workpiece_information_to_send = []
+                            self.current_send_index = 0
+                    else:
+                        self.log(f"------未知指令: '{command}'")
+
+                except socket.timeout:
+                    if not self.running or self.stop_flag: break
+                    continue # 继续等待数据
+                except UnicodeDecodeError:
+                    self.log("接收到无法解码为UTF-8的数据。")
+                except ConnectionResetError:
+                    self.log("PLC连接被重置。")
+                    self.running = False
+                    break
+                except socket.error as e:
+                    self.log(f"Socket通信错误: {e}")
+                    self.running = False # 通常socket错误意味着连接已中断
+                    break
+        except Exception as e:
+            self.log(f"客户端处理线程发生意外错误: {e}")
+        finally:
+            if self.client_socket.fileno() != -1 : # 检查socket是否还打开
+                self.client_socket.close()
+            self.server.on_client_disconnected(self.client_socket) # 通知服务器实例
+            self.log("客户端处理线程已结束。")
 

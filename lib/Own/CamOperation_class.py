@@ -63,7 +63,8 @@ class CameraOperation():
         self.frame_rate = frame_rate
         self.exposure_time = exposure_time
         self.gain = gain
-
+        self.latest_info = None
+        
     def To_hex_str(self,num):
         chaDic = {10: 'a', 11: 'b', 12: 'c', 13: 'd', 14: 'e', 15: 'f'}
         hexStr = ""
@@ -81,7 +82,7 @@ class CameraOperation():
             # ch:选择设备并创建句柄 | en:Select device and create handle
             nConnectionNum = int(self.n_connect_num)
             stDeviceList = cast(self.st_device_list.pDeviceInfo[int(nConnectionNum)], POINTER(MV_CC_DEVICE_INFO)).contents
-            self.obj_cam = MvCamera()
+            # self.obj_cam = MvCamera()
             ret = self.obj_cam.MV_CC_CreateHandle(stDeviceList)
             if ret != 0:
                 self.obj_cam.MV_CC_DestroyHandle()
@@ -242,7 +243,7 @@ class CameraOperation():
                 #获取到图像的时间开始节点获取到图像的时间开始节点
                 self.st_frame_info = stOutFrame.stFrameInfo
                 cdll.msvcrt.memcpy(byref(buf_cache), stOutFrame.pBufAddr, self.st_frame_info.nFrameLen)
-                print ("get one frame: Width[%d], Height[%d], nFrameNum[%d]"  % (self.st_frame_info.nWidth, self.st_frame_info.nHeight, self.st_frame_info.nFrameNum))
+                #print ("get one frame: Width[%d], Height[%d], nFrameNum[%d]"  % (self.st_frame_info.nWidth, self.st_frame_info.nHeight, self.st_frame_info.nFrameNum))
                 self.n_save_image_size = self.st_frame_info.nWidth * self.st_frame_info.nHeight * 3 + 2048
                 if img_buff is None:
                     img_buff = (c_ubyte * self.n_save_image_size)()
@@ -252,7 +253,7 @@ class CameraOperation():
                 if True == self.b_save_bmp:
                     self.Save_Bmp(buf_cache) #ch:保存Bmp图片 | en:Save Bmp
             else:
-                print("no data, nret = "+self.To_hex_str(ret))
+                # print("no data, nret = "+self.To_hex_str(ret))
                 continue
 
             #转换像素结构体赋值
@@ -277,22 +278,38 @@ class CameraOperation():
                 time_start=time.time()
                 ret = self.obj_cam.MV_CC_ConvertPixelType(stConvertParam)
                 time_end=time.time()
-                print('MV_CC_ConvertPixelType:',time_end - time_start) 
+                # print('MV_CC_ConvertPixelType:',time_end - time_start) 
                 if ret != 0:
                     tkinter.messagebox.showerror('show error','convert pixel fail! ret = '+self.To_hex_str(ret))
                     continue
                 cdll.msvcrt.memcpy(byref(img_buff), stConvertParam.pDstBuffer, nConvertSize)
                 numArray = CameraOperation.Color_numpy(self,img_buff,self.st_frame_info.nWidth,self.st_frame_info.nHeight)
-
-            #图像处理
-            # 将RGB格式转换为BGR格式
-            numArray = cv2.cvtColor(numArray, cv2.COLOR_RGB2BGR)
-            imgprocess = Processor(numArray)
-            result = imgprocess.process()
-            result = cv2.cvtColor(result, cv2.COLOR_BGR2RGB)
+            
+            # 图像处理
+            # 将相机输出的原始RGB格式转换为OpenCV常用的BGR格式
+            bgr_image_for_processing = cv2.cvtColor(numArray, cv2.COLOR_RGB2BGR)
+            
+            try:
+                # 图像处理
+                imgprocess = Processor(bgr_image_for_processing)
+                result_img, info_for = imgprocess.process() # 解包返回值
+                self.latest_info = info_for
+                # 转为RGB以在Tkinter中显示
+                display_img_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
+    
+            except Exception as e:
+                print(f"图像处理时发生错误: {e}")
+                # 即使处理失败，也显示原始图像，避免UI冻结
+                display_img_rgb = cv2.cvtColor(bgr_image_for_processing, cv2.COLOR_BGR2RGB)
             
             #合并OpenCV到Tkinter界面中
-            current_image = Image.fromarray(result).resize((800, 800), resample=Image.Resampling.LANCZOS) 
+            # 【修复】动态调整显示大小，避免图像扭曲
+            current_image = Image.fromarray(display_img_rgb)
+            if panel.winfo_width() > 1 and panel.winfo_height() > 1:
+                current_image = current_image.resize((panel.winfo_width(), panel.winfo_height()), resample=Image.Resampling.LANCZOS)
+                    
+            # current_image = Image.fromarray(display_img_rgb).resize((800, 800), resample=Image.Resampling.LANCZOS)
+
             imgtk = ImageTk.PhotoImage(image=current_image, master=root)
             panel.imgtk = imgtk       
             panel.config(image=imgtk) 

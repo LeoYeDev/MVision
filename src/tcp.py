@@ -7,89 +7,67 @@ import queue
 # --- 数据格式化函数 (参照C#代码中的格式) ---
 def format_object_data_for_plc(detected_object_info):
     """
-    将 processimg.py 中检测到的单个对象信息格式化为PLC易于解析的字符串。
-    C#格式示例:
-    方形/矩形: "0xS,X坐标,Y坐标,角度,颜色代码" (例如: "0xS,-100.50,+200.75,-045.00,R")
-    圆形: "0xC,X坐标,Y坐标,,+000.00,颜色代码" (例如: "0xC,-050.20,+150.00,,+000.00,B") (注意角度前多一个逗号)
-    六边形: "0xH,X坐标,Y坐标,角度,颜色代码"
-
-    参数:
-        detected_object_info (dict): 从 processimg.py 的 process() 方法返回的单个对象信息字典。
-                                     包含 "shape", "color", "robot_x", "robot_y", "angle_deg"。
-    返回:
-        str: 格式化后的字符串，准备发送给PLC。
+    参数:detected_object_info (dict): 包含 "shape", "color", "robot_x", "robot_y", "angle_deg"。
+    返回:str: 格式化后的字符串，准备发送给PLC。
     """
+    prefix = "0xU,"  # U for Unknown, 默认前缀
     shape = detected_object_info.get("shape", "unknown")
-    # processimg.py 返回的颜色是 "red", "blue" 等，取首字母大写作为颜色代码
     color_code = detected_object_info.get("color", "N/A")[0].upper() if detected_object_info.get("color") != "N/A" else "U"
-
     # processimg.py 返回的 robot_x, robot_y 已经是带正负号和两位小数的字符串
     robot_x = detected_object_info.get("robot_x", "+000.00")
     robot_y = detected_object_info.get("robot_y", "+000.00")
+    #手动加上相应的偏移值
+    robot_x = float(robot_x) + 0.001  # 假设偏移值为0.01
+    robot_y = float(robot_y) + 0.001  # 假设偏移值为0.01
     robot_x_str = f"{robot_x:+07.2f}"
     robot_y_str = f"{robot_y:+07.2f}"
 
-    angle_deg = detected_object_info.get("angle_deg", 0.0)
-
-    prefix = "0xU,"  # U for Unknown, 默认前缀
     angle_str_formatted = ""
-
+    angle_deg = detected_object_info.get("angle_deg", 0.0)
+    #手动加上相应的偏移值
+    if 0<= angle_deg <= 180:
+        angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
+    else:
+        angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
+    angle_deg = float(angle_deg) + 0.001  # 假设偏移值为0.01
+    angle_deg_judge = 5
     # 根据C#代码中的格式调整角度和前缀
     if shape in ["square", "rectangle", "diamond", "trapezoid"]: # 假设这些都用 S，梯形也用S处理角度
         prefix = "0xS"
-        # C# 逻辑: if (SAngle >= 0) strSAngle = "-" + SAngle.ToString("000.00");
-        # else strSAngle = "+" + (0 - SAngle).ToString("000.00");
-        # Python 实现: angle_deg 是 0-360 度。C#的SAngle可能是调整过的。
-        # 我们这里直接格式化 processimg.py 返回的 0-360 度角。
-        # 如果PLC需要特定范围或符号转换，需在此调整。
-        # 假设PLC接收的是带符号的度数，总共7位（含符号和小数点），两位小数。
-        # 例如 -45.00 -> "-045.00", 90.00 -> "-090.00" (如果定义正角为负号)
-        # 为与C#例子中SAngle的 +/- 逻辑对应，我们假设一个转换规则：
-        # 若 angle_deg 在 [0, 180]，视为 SAngle = -angle_deg
-        # 若 angle_deg 在 (180, 360)，视为 SAngle = +(360 - angle_deg) -> 错误，C#是简单的符号反转
-        # 假设C#中的 SAngle 就是简单的 +/- angle_deg，但显示时符号可能反了。
-        # 我们直接格式化 angle_deg，PLC端需要理解这个0-360的角度。
-        # 或者，如果严格按照C#的输出格式，需要知道SAngle如何从原始角度计算。
-        # 暂时采用直接格式化0-360角度，带正负号（以+代表正）
-        if 0<= angle_deg <= 180:
-            angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
-        else:
-            angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
-        angle_deg = angle_deg * 999.9 / 180
-        # angle_deg = -angle_deg
+        #匹配PLC中的行程
+        if 0 <= angle_deg <= 90:
+            angle_deg = angle_deg -180
+        elif 90 < angle_deg <= 180:
+            angle_deg = angle_deg - 270
+        elif -90 < angle_deg <= 0:
+            angle_deg = angle_deg - 90
+        angle_deg = angle_deg * angle_deg_judge
         angle_str_formatted = f"{angle_deg:+07.2f}" # 例如 +045.00, +270.00
 
     elif shape == "circle":
         prefix = "0xC"
-        angle_str_formatted = "+000.00"  # 注意，根据C#为圆形特意增加一个逗号，然后是固定角度字符串
-                                        # "0xC," + strRealPointX + "," + strRealPointY + "," + ",+000.00" + strRealColor
+        angle_str_formatted = "+000.00"
 
     elif shape == "hexagon":
         prefix = "0xH"
-        if 0<= angle_deg <= 180:
-            angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
-        else:
-            angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
+        angle_deg = angle_deg * angle_deg_judge
         angle_str_formatted = f"{angle_deg:+07.2f}" # 同方形处理
+    
     print(f"格式化对象: {shape}, 位置: ({robot_x_str}, {robot_y_str}), 角度: {angle_str_formatted}, 颜色: {color_code}")
     # 最终字符串拼接
     return f"{prefix},{robot_x_str},{robot_y_str},{angle_str_formatted},{color_code}"
 
-
 def format_error_for_plc(area_identifier_char):
     """
-    格式化错误信息。
-    C#中的格式: "0xError,Pos" + Workpiece_Area[SortIndex]; (Workpiece_Area是 'A', 'B', 'C', 'D')
+    格式化错误信息。格式: "0xError,Pos" + Workpiece_Area[SortIndex]; (Workpiece_Area是 'A', 'B', 'C', 'D')
     """
     return f"0xError,Pos{area_identifier_char}"
 
 def format_over_for_plc():
     """
-    格式化 "Over" 信息。
-    C#中的格式: "0xOver" (当工件在纠偏时未移动或符合要求时发送)
+    格式化 "Over" 信息。格式: "0xOver" (当工件在纠偏时未移动或符合要求时发送)
     """
     return "0xOver"
-
 
 class PLCServer:
     def __init__(self, host, port, ui_update_callback=None, request_process_callback=None):
@@ -100,11 +78,6 @@ class PLCServer:
         self.running = False
         self.ui_update_callback = ui_update_callback  # GUI日志更新回调
         self.request_process_callback = request_process_callback # 回调AppUI触发检测/相机操作
-
-        # 这些状态量现在移到 ClientHandlerThread 中，因为它们是每个客户端独立的
-        # self.current_area_num = 0
-        # self.workpiece_information_to_send = [] # 存储当前批次待发送的工件信息
-        # self.current_send_index = 0
 
     def log(self, message):
         """记录日志，并通过回调更新UI。"""
@@ -236,8 +209,6 @@ class PLCServer:
                 break
         self.log("服务器监听线程已停止。")
 
-    
-
 
 class ClientHandlerThread(threading.Thread):
     def __init__(self, client_socket, client_address, server_instance):
@@ -293,7 +264,6 @@ class ClientHandlerThread(threading.Thread):
         else:
             self.log("没有检测到工件数据需要发送。")
             # 根据C#逻辑，若无工件，不主动发送，等待PLC指令
-
 
     def run(self):
         """处理来自单个PLC客户端的通信。"""

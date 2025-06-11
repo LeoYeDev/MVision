@@ -292,21 +292,31 @@ class AppUI:
 
     def get_parameter(self):
         self.camera.obj_cam_operation.Get_parameter()
-        self.text_frame_rate.delete(1.0, tk.END)
-        self.text_frame_rate.insert(1.0,self.camera.obj_cam_operation.frame_rate)
-        self.text_exposure_time.delete(1.0, tk.END)
-        self.text_exposure_time.insert(1.0,self.camera.obj_cam_operation.exposure_time)
-        self.text_gain.delete(1.0, tk.END)
-        self.text_gain.insert(1.0, self.camera.obj_cam_operation.gain)
+        # 【修复】使用 tk.Entry 的正确方法 (delete 0, END; insert 0, ...)
+        self.text_exposure_time.delete(0, tk.END)
+        self.text_exposure_time.insert(0, str(self.camera.obj_cam_operation.exposure_time))
+        
+        self.text_gain.delete(0, tk.END)
+        self.text_gain.insert(0, str(self.camera.obj_cam_operation.gain))
+
+        self.text_frame_rate.delete(0, tk.END)
+        self.text_frame_rate.insert(0, str(self.camera.obj_cam_operation.frame_rate))
+        self.log_message("参数获取成功。")
 
     def set_parameter(self):
-        self.camera.obj_cam_operation.exposure_time = self.text_exposure_time.get(1.0,tk.END)
-        self.camera.obj_cam_operation.exposure_time = self.camera.obj_cam_operation.exposure_time.rstrip("\n")
-        self.camera.obj_cam_operation.gain = self.text_gain.get(1.0,tk.END)
-        self.camera.obj_cam_operation.gain = self.camera.obj_cam_operation.gain.rstrip("\n")
-        self.camera.obj_cam_operation.frame_rate = self.text_frame_rate.get(1.0,tk.END)
-        self.camera.obj_cam_operation.frame_rate = self.camera.obj_cam_operation.frame_rate.rstrip("\n")
-        self.camera.obj_cam_operation.Set_parameter(self.camera.obj_cam_operation.frame_rate,self.camera.obj_cam_operation.exposure_time,self.camera.obj_cam_operation.gain)
+        # 【修复】使用 tk.Entry 的正确方法 get()
+        exposure_time_str = self.text_exposure_time.get()
+        gain_str = self.text_gain.get()
+        frame_rate_str = self.text_frame_rate.get()
+        if not all([exposure_time_str, gain_str, frame_rate_str]):
+            messagebox.showerror('输入错误', '所有参数框都不能为空。')
+            return
+        # 传递给相机操作对象
+        self.camera.obj_cam_operation.exposure_time = exposure_time_str
+        self.camera.obj_cam_operation.gain = gain_str
+        self.camera.obj_cam_operation.frame_rate = frame_rate_str
+        self.camera.obj_cam_operation.Set_parameter()
+        self.log_message("参数设置成功。")
 
     # --- PLC 请求处理回调 ---
     def handle_plc_request(self, client_socket, command, area_num=0, sort_payload=None):
@@ -318,89 +328,21 @@ class AppUI:
             self.log_message("错误: 相机未打开或运行，无法响应PLC。")
             return
 
-        current_bgr_image_np = None
         detected_objects = []
         detected_objects.clear() # 清除检测到的物体列表
         if command == "START" or command == "SORT":
             self.log_message(f"PLC请求 '{command}', 正在准备图像...")
-            # 确保相机在触发模式以获取单帧，或能从连续模式中取到最新帧
-            # original_mode = self.model_val.get()
+            # 从 CamOperation 获取最新的信息
+            # **重要**: CamOperation_class.py 中的 Work_thread 需要更新 self.latest_info
+            time.sleep(0.05)
+            detected_objects = getattr(self.camera.obj_cam_operation, 'latest_info', None)
+            print(f"获取到信息 ")
             
-            # if not self.camera.obj_cam_operation.b_start_grabbing:
-            #      self.log_message("相机未在采集状态，尝试启动单次触发模式采集。")
-            #      self.camera.obj_cam_operation.Set_trigger_mode("triggermode") #确保是触发模式
-            #      self.camera.obj_cam_operation.Start_grabbing(self.window, self.panel) # 确保采集线程已启动
-            #      time.sleep(0.1) # 给采集线程启动时间
-            
-            # if self.model_val.get() != 'triggermode': # 如果当前不是触发模式，临时切换
-            #     self.camera.obj_cam_operation.Set_trigger_mode("triggermode")
-            
-            # self.camera.obj_cam_operation.Trigger_once(1) # 软触发
-            # self.log_message("软触发已发送，等待图像数据...")
-            # time.sleep(0.5) # 增加等待时间，确保图像已更新 (C#中是250ms + 后续处理)
-
-            # 从 CamOperation 获取最新的BGR图像
-            # **重要**: CamOperation_class.py 中的 Work_thread 需要更新 self.latest_bgr_image_for_processing
-            time.sleep(0.2)
-            current_bgr_image_np = getattr(self.camera.obj_cam_operation, 'latest_info', None)
-            print(f"当前图像数据类型111111111: {type(current_bgr_image_np)}")
-            
-            if current_bgr_image_np is None:
-                self.log_message("错误: 未能从相机操作模块获取最新图像数据以响应PLC。")
+            if detected_objects is None:
+                self.log_message("错误: 未能从相机操作模块获取最新数据以响应PLC。")
                 return
-            
-            # 使用从文件加载的 self.SCAN_AREAS ---
-            # if not (1 <= area_num <= len(self.SCAN_AREAS)):
-            #     self.log_message(f"错误: 无效的区域编号 {area_num}。将处理整个图像。")
-            #     roi_rect = (0, 0, current_bgr_image_np.shape[1], current_bgr_image_np.shape[0])
-            # else:
-            #     # area_num 是 1-based, 列表索引是 0-based
-            #     roi_rect = self.SCAN_AREAS[area_num - 1]
-            
-            # x, y, w, h = roi_rect
-            # 检查ROI是否在图像边界内
-            # if y + h > current_bgr_image_np.shape[0] or x + w > current_bgr_image_np.shape[1]:
-            #     self.log_message(f"错误: 区域 {area_num} 的ROI(x={x}, y={y}, w={w}, h={h}) 超出图像边界。")
-            #     # 可以选择返回错误或处理全图
-            #     return
-            
-            # self.log_message(f"\n已从全图中提取区域 {area_num} 的ROI: (x={x}, y={y}, w={w}, h={h})\n")
 
-            # --- 图像处理 ---
-            # self.image_processor = Processor(current_bgr_image_np.copy())
-            # processed_display_img, detected_objects = self.image_processor.process(roi_rect=roi_rect) # Processor处理BGR图像
-
-
-            detected_objects = current_bgr_image_np
-
-
-            # cv2.imshow("out", processed_display_img)
-            # if original_mode == 'continuous' and self.model_val.get() == 'triggermode': # 如果原先是连续，恢复它
-            #      time.sleep(0.3) # 增加等待时间，确保图像已更新 (C#中是250ms + 后续处理)
-            #      self.camera.obj_cam_operation.Set_trigger_mode("continuous")
-            #      self.log_message("已恢复为连续采集模式。")
-
-
-            # 注意：C#代码中 Workpiece_Deetection1 等函数会根据 ScanPointNum（即area_num）
-            # 对 BK_CurrentImage（原图）的特定ROI（ScanAreaX_rect）进行操作，
-            # 然后调用 workpiece_HSV_Recognition。
-            # 这里的 Processor.process() 目前是处理整个图像。
-            # 如果需要ROI处理，Processor类或此处的调用需要调整。
-            # 暂时，我们让Processor处理全图，PLC端可能需要根据area_num做筛选，或者Processor内部实现ROI。
-            
             self.log_message(f"图像处理完成。检测到 {len(detected_objects)} 个物体。")
-
-            # 在GUI上显示处理后的图像 (可选, 但 Work_thread 可能已经在显示了)
-            # 如果 Work_thread 也在运行并更新 self.panel, 这里更新可能会冲突或被覆盖
-            # 可以考虑让 Work_thread 显示原始/简单处理的图像，这里显示PLC请求特定处理的图像
-            # from PIL import Image, ImageTk # 确保导入
-            # display_rgb_for_panel = cv2.cvtColor(processed_display_img, cv2.COLOR_BGR2RGB)
-            # img_pil = Image.fromarray(display_rgb_for_panel)
-            # if self.panel.winfo_width() > 1 and self.panel.winfo_height() > 1 : # 确保panel尺寸有效
-            #     img_pil = img_pil.resize((self.panel.winfo_width(), self.panel.winfo_height()), Image.Resampling.LANCZOS)
-            # imgtk = ImageTk.PhotoImage(image=img_pil, master=self.window)
-            # self.panel.imgtk = imgtk
-            # self.panel.config(image=imgtk)
 
             # --- 发送结果给PLCServer ---
             self.plc_server.send_results_to_plc(client_socket, detected_objects, area_num)
@@ -410,43 +352,18 @@ class AppUI:
             if command == "SORT" and sort_payload:
                 area_char_sort = chr(ord('A') + area_num - 1) if 1 <= area_num <= 4 else 'X'
                 handler_thread = self.plc_server.client_handlers.get(client_socket)
-                
-                # 简化逻辑：C#中MovementDetection和Re_Workpiece_Deetection的逻辑复杂。
-                # MovementDetection: 如果contours为空 (即detected_objects为空)，发送Error。否则内部比较，可能发Error。
-                # Re_Workpiece_Deetection: 重新检测后，选择最近的同类型发送。
-                # 这里假设：
-                # 1. 如果是 MovementDetection 模式（纠偏首次检测）
-                # 2. 并且没有检测到对象
-                # 3. 则发送 Error
-                # 4. 否则，如果检测到对象（数据已由send_results_to_plc发送），并且不是Error，则发送Over（简化）
-                #    （C#中Over的发送条件更细致，与workpiece_type的比较等有关）
-
                 is_movement_detection_mode = sort_payload.get("detection_mode") == "REALIGNMENT_MOVEMENT_DETECTION"
                 
                 if is_movement_detection_mode:
-                    if not detected_objects:
-                        self.log_message(f"SORT (MovementDetection): 区域 {area_char_sort} 未检测到工件，发送错误。")
-                        self.plc_server.send_specific_message_to_plc(client_socket, "ERROR_POS", area_char_sort)
-                        if handler_thread: handler_thread.movement_flag = True # 标记发生移动/错误
-                    else:
-                        # C#中 MovementDetection 找到物体后会比较，如果发生偏移也可能发Error
-                        # 如果没偏移，它会发送 "0xOver"
-                        # 这里简化：如果找到了，就认为可以，发 "Over"
-                        # TODO: 实现更精确的偏移判断逻辑
-                        self.log_message(f"SORT (MovementDetection): 区域 {area_char_sort} 检测到工件，发送OVER。")
-                        self.plc_server.send_specific_message_to_plc(client_socket, "OVER")
-                        if handler_thread: handler_thread.movement_flag = False # 标记未发生移动/错误
-                
-                # 对于 REALIGNMENT_RE_DETECTION，数据已由 send_results_to_plc 发送
-                # C# 中 Re_Workpiece_Deetection 会选择最匹配的一个发送。我们的 process() 返回了所有检测到的。
-                # PLCServer 的 send_results_to_plc 会按顺序发送它们。
+                    self.log_message(f"SORT指令代码未编写。")
+                    self.plc_server.send_specific_message_to_plc(client_socket, "OVER")
+                    if handler_thread: handler_thread.movement_flag = False # 标记未发生移动/错误
 
                 if handler_thread: # 更新SortIndex (C#中在发送Over前或处理AllWorkpieceInfo时)
                     handler_thread.sort_index = (handler_thread.sort_index + 1) 
 
         elif command == "STOP":
             self.log_message("PLC请求停止操作，正在执行清理/状态重置...")
-            # if self.camera.obj_cam_operation and self.camera.obj_cam_operation.b_start_grabbing:
             # self.camera.obj_cam_operation.Stop_grabbing() # 可选：是否真的停止相机物理采集
             
             # 重置PLC会话相关的状态 (在对应的ClientHandlerThread中)
@@ -461,10 +378,8 @@ class AppUI:
 
     def _load_scan_areas_from_files(self, file_paths):
         """
-        从一系列文本文件中加载扫描区域(ROI)坐标。
-        每个文件应包含两行，每行两个由空格或逗号分隔的整数:
-        第一行: x1 y1 (左上角)
-        第二行: x2 y2 (右下角)
+        从一系列文本文件中加载扫描区域(ROI)坐标。每个文件应包含两行，每行两个由空格或逗号分隔的整数:
+        第一行: x1 y1 (左上角) 第二行: x2 y2 (右下角)
         """
         loaded_areas = []
         for file_path in file_paths:

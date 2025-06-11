@@ -8,6 +8,7 @@ sys.path.append("./src")
 sys.path.append("./config")
 from process_math import *
 from param import PLC_SERVER_HOST, PLC_SERVER_PORT, CALIBRATION_FILE_PATH, SCAN_AREA_FILES
+
 class Processor:
     def __init__(self, img):
         self.img = img 
@@ -20,10 +21,11 @@ class Processor:
         #     'blue': ((90, 85,  13),  (160, 255, 255)),
         #     'yellow': ((10, 60, 13), (30, 255, 255)),
         # }
+
         self.hsv_ranges = {
             'yellow': ((5, 60, 13), (30, 255, 255)),
             'red1': ((0, 100, 20),   (100, 255, 255)),
-            # 'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
+            'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
             'green': ((40,  50,  10),  (90,  255, 255)),
             'blue': ((90, 85,  13),  (160, 255, 255)),
         }
@@ -40,61 +42,43 @@ class Processor:
 
         # --- 新增：从文件加载仿射变换矩阵 ---
         self.affine_transform_matrix = None # 初始化为None
-        calibration_file_path=CALIBRATION_FILE_PATH
-        self._load_affine_matrix(calibration_file_path) # 调用加载方法
+        self._load_affine_matrix(CALIBRATION_FILE_PATH) # 调用加载方法
     
     def _load_affine_matrix(self, filepath):
-        """从指定的txt文件加载3x3仿射变换矩阵。
-           文件格式：每行3个由逗号分隔的浮点数，共3行。
-        """
         if not os.path.exists(filepath):
-            print(f"错误：标定文件 '{filepath}' 未找到！将使用单位矩阵进行坐标转换。")
-            self.affine_transform_matrix = np.eye(3, dtype=np.float32) # 使用单位矩阵作为备用
+            print(f"错误：标定文件 '{filepath}' 未找到！")
+            self.affine_transform_matrix = np.eye(3, dtype=np.float32)
             return
-
         try:
-            matrix_data = []
-            with open(filepath, 'r') as f:
-                for line in f:
-                    # 移除可能的空白字符并按逗号分割
-                    parts = [float(p.strip()) for p in line.strip().split(',') if p.strip()]
-                    if len(parts) == 3:
-                        matrix_data.append(parts)
-            
-            if len(matrix_data) == 3:
-                self.affine_transform_matrix = np.array(matrix_data, dtype=np.float32)
-                if self.affine_transform_matrix.shape == (3,3):
-                    None
-                    # print(f"成功从 '{filepath}' 加载标定矩阵:\n{self.affine_transform_matrix}")
-                else:
-                    print(f"错误：从 '{filepath}' 读取的矩阵不是3x3形状！将使用单位矩阵。")
-                    self.affine_transform_matrix = np.eye(3, dtype=np.float32)
-            else:
-                print(f"错误：文件 '{filepath}' 内容格式不正确（应为3行，每行3个逗号分隔的数字）！将使用单位矩阵。")
+            self.affine_transform_matrix = np.loadtxt(filepath, delimiter=',')
+            if self.affine_transform_matrix.shape != (3, 3):
+                print(f"错误：从 '{filepath}' 读取的矩阵不是3x3形状！")
                 self.affine_transform_matrix = np.eye(3, dtype=np.float32)
         except Exception as e:
-            print(f"加载标定文件 '{filepath}' 时发生错误: {e}。将使用单位矩阵。")
+            print(f"加载标定文件 '{filepath}' 时发生错误: {e}")
             self.affine_transform_matrix = np.eye(3, dtype=np.float32)
 
     def process(self, roi_rect=None):
-        source_image = self.img.copy()
-        #roi_rect = [100, 100, 2000, 1500] if roi_rect is None else roi_rect # 默认ROI区域
-        # --- 【核心修改】应用ROI遮罩 ---
-        # roi_rect = None
+        img_display = self.img.copy()# 用于绘制结果的图像
+       # --- 【核心修改】应用ROI遮罩 ---
         roi_rect = [300, 200, 2000, 1500]
         if roi_rect is not None:
+            # 创建一个半透明的浅色覆盖层
+            overlay = img_display.copy()
+            cv2.rectangle(overlay, (0, 0), (overlay.shape[1], overlay.shape[0]), (230, 230, 230), -1)
+            # 将覆盖层与显示图像混合
+            alpha = 0.6  # 透明度
+            img_display = cv2.addWeighted(overlay, alpha, img_display, 1 - alpha, 0)
+            # "擦亮" ROI 区域，恢复其原始内容
             x, y, w, h = roi_rect
-            # 1. 创建一个和原图一样大的黑色遮罩
-            mask_roi = np.zeros(source_image.shape[:2], dtype="uint8")
-            # 2. 在遮罩上绘制白色的ROI矩形
-            cv2.rectangle(mask_roi, (x, y), (x + w, y + h), 255, -1)
-            # 3. 将遮罩应用到原图上
-            source_image = cv2.bitwise_and(source_image, source_image, mask=mask_roi)
+            img_display[y:y+h, x:x+w] = self.img[y:y+h, x:x+w]
+            # 绘制清晰的ROI边框
+            cv2.rectangle(img_display, (x, y), (x+w, y+h), (255, 255, 0), 3)
         else:
-            x,y,w,h= 0, 0, source_image.shape[1], source_image.shape[0] # 如果没有ROI，使用全图
+            x,y,w,h= 0, 0, img_display.shape[1], img_display.shape[0] # 如果没有ROI，使用全图
 
-        img_display = source_image.copy() # 用于绘制结果的图像
-        hsv = cv2.cvtColor(source_image, cv2.COLOR_BGR2HSV)
+        # --- 对原始、完整的图像进行颜色分割和轮廓提取 ---
+        hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV)
         
         # 合并所有颜色掩膜
         mask = None
@@ -102,8 +86,7 @@ class Processor:
             m = cv2.inRange(hsv, np.array(lo), np.array(hi))
             mask = m if mask is None else cv2.bitwise_or(mask, m)
         
-        if mask is None:
-            return img_display, [] 
+        if mask is None: return img_display, [] 
 
         # 形态学操作 (保持上一版本中的平滑处理)
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
@@ -124,8 +107,7 @@ class Processor:
         
         for cnt in contours:
             area_cnt = cv2.contourArea(cnt) # 原始轮廓的面积
-            if area_cnt < self.min_area:    
-                continue
+            if area_cnt < self.min_area: continue
 
             # --- 边框过滤逻辑 (保持不变) ---
             x_br, y_br, w_br, bh_br = cv2.boundingRect(cnt) 
@@ -150,6 +132,13 @@ class Processor:
             box_points = cv2.boxPoints(rect).astype(int) 
             cv2.drawContours(img_display, [box_points], -1, (128,0,128), self.line_thickness2 -1 if self.line_thickness2 > 1 else 1)
             
+            # 【核心修改 2】根据中心点位置过滤物体
+            if roi_rect is not None:
+                x, y, w, h = roi_rect
+                # 如果中心点不在ROI内部，则跳过此轮廓
+                if not (x <= cx_rect_float < x + w and y <= cy_rect_float < y + h):
+                    continue
+
             # --- 基于凸包 `hull` 进行形状分析 ---
             hull = cv2.convexHull(cnt) # 计算原始轮廓的凸包
             perimeter_hull = cv2.arcLength(hull, True) # 凸包的周长
@@ -158,8 +147,7 @@ class Processor:
             # 对凸包进行多边形逼近
             approx_hull = cv2.approxPolyDP(hull, self.eps_factor * perimeter_hull, True)
             num_vertices_hull = len(approx_hull)
-            # 绘制原始轮廓 (蓝色)
-            # cv2.drawContours(img_display, [cnt], -1, (255,0，0), self.line_thickness1)
+
             # 绘制凸包轮廓 (绿色)
             cv2.drawContours(img_display, [hull], -1, (0,255,0), self.line_thickness2)
             # 形状判断 (基于凸包的顶点数 `num_vertices_hull` 和 `approx_hull`)
@@ -275,7 +263,6 @@ class Processor:
                     cv2.arrowedLine(img_display, tuple(ref_vec_start_pt.astype(int)), tuple(ref_vec_end_pt.astype(int)), 
                                     (255, 100, 0), self.line_thickness2)
 
-
              # --- 坐标转换和显示 ---
             robot_x_str, robot_y_str = "N/A", "N/A" # 初始化为N/A
             pixel_x_to_transform = float(cx_rect_float) # 使用最小外接矩形中心作为待转换点
@@ -340,12 +327,12 @@ class Processor:
                 "robot_y": robot_y
             }
             detected_objects_info.append(current_object_data)
-            print(f"检测到物体: {current_object_data}")
+            # print(f"检测到物体: {current_object_data}")
         return img_display, detected_objects_info
 
 
 if __name__ == "__main__":
-    img_path = 'Y1.jpg'           
+    img_path = '1454.jpg'           
     img_main = cv2.imread(img_path)
     print(f"读取图像: {img_path}, 大小: {img_main.shape[1]}x{img_main.shape[0]}")
     

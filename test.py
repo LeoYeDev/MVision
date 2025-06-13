@@ -1,3 +1,4 @@
+#梦开始的地方，OpenCV入门
 import cv2 #opencv读取的格式是BGR
 import matplotlib.pyplot as plt
 import numpy as np 
@@ -22,7 +23,6 @@ for i in range(6):
     plt.xticks([]), plt.yticks([])
 plt.show()
 
-
 img_gray=cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
 
 ret, thresh1 = cv2.threshold(img_gray, 127, 255, cv2.THRESH_BINARY)
@@ -40,10 +40,9 @@ for i in range(6):
     plt.xticks([]), plt.yticks([])
 plt.show()
 
-#coding:utf-8
+#读取视频流，本机的摄像头  控制台Ctrl+C退出
 # import cv2
 # import sys
-
 
 # def CatchUsbVideo(window_name, camera_idx):
 #     cv2.namedWindow(window_name)#写入打开时视频框的名称

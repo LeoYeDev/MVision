@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+#定义一个图形用户界面(GUI)类AppUI，用于控制相机采集、PLC通信等功能
 import sys
 import tkinter as tk
 
@@ -318,7 +318,9 @@ class AppUI:
         self.camera.obj_cam_operation.Set_parameter()
         self.log_message("参数设置成功。")
 
-    # --- PLC 请求处理回调 ---
+
+
+    # --- PLC 请求处理回调，回调逻辑在此处理 ---
     def handle_plc_request(self, client_socket, command, area_num=0, sort_payload=None):
         self.log_message(f"收到PLC请求: command='{command}', area_num={area_num}, sort_payload={sort_payload}")
 
@@ -334,7 +336,7 @@ class AppUI:
             self.log_message(f"PLC请求 '{command}', 正在准备图像...")
             # 从 CamOperation 获取最新的信息
             # **重要**: CamOperation_class.py 中的 Work_thread 需要更新 self.latest_info
-            time.sleep(0.05)
+            time.sleep(0.8)
             detected_objects = getattr(self.camera.obj_cam_operation, 'latest_info', None)
             print(f"获取到信息 ")
             

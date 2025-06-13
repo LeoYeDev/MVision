@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+# 有所修改，体现在Work_thread中的取流后的图像处理，同时定义了self.latest_info以及self.processor
 import sys
 import threading
 import msvcrt
@@ -64,6 +64,7 @@ class CameraOperation():
         self.exposure_time = exposure_time
         self.gain = gain
         self.latest_info = None
+        self.processor = Processor()
         
     def To_hex_str(self,num):
         chaDic = {10: 'a', 11: 'b', 12: 'c', 13: 'd', 14: 'e', 15: 'f'}
@@ -291,12 +292,10 @@ class CameraOperation():
             
             try:
                 # 图像处理
-                imgprocess = Processor(bgr_image_for_processing)
-                result_img, info_for = imgprocess.process() # 解包返回值
+                result_img, info_for = self.processor.process(bgr_image_for_processing)
                 self.latest_info = info_for
                 # 转为RGB以在Tkinter中显示
                 display_img_rgb = cv2.cvtColor(result_img, cv2.COLOR_BGR2RGB)
-    
             except Exception as e:
                 print(f"图像处理时发生错误: {e}")
                 # 即使处理失败，也显示原始图像，避免UI冻结

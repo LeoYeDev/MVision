@@ -1,3 +1,4 @@
+#图像处理中常用的数学计算函数
 import numpy as np
 
 def get_midpoint(p1, p2):

@@ -1,3 +1,4 @@
+# 获取鼠标点击位置的hsv值并输出
 import cv2
  
 def mouse_callback(event, x, y, flags, param):

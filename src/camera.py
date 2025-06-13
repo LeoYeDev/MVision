@@ -1,4 +1,4 @@
-# -- coding: utf-8 --
+#定义了CameraParam类，用于管理相机参数和操作
 import sys
 
 sys.path.append("./lib/MvImport")

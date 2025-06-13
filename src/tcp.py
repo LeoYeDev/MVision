@@ -1,10 +1,14 @@
-# src/tcp_server.py
+#定义了与PLC的TCP通信服务器类和客户端处理线程类
 import socket
 import threading
 import time
 import queue
+import sys 
 
-# --- 数据格式化函数 (参照C#代码中的格式) ---
+sys.path.append("./config")
+from param import *
+
+# --- 数据格式化函数 ---
 def format_object_data_for_plc(detected_object_info):
     """
     参数:detected_object_info (dict): 包含 "shape", "color", "robot_x", "robot_y", "angle_deg"。
@@ -17,40 +21,50 @@ def format_object_data_for_plc(detected_object_info):
     robot_x = detected_object_info.get("robot_x", "+000.00")
     robot_y = detected_object_info.get("robot_y", "+000.00")
     #手动加上相应的偏移值
-    robot_x = float(robot_x) + 0.001  # 假设偏移值为0.01
-    robot_y = float(robot_y) + 0.001  # 假设偏移值为0.01
+    robot_x = float(robot_x) + 0  # 假设偏移值为0.01
+    robot_y = float(robot_y) + 0  # 假设偏移值为0.01
     robot_x_str = f"{robot_x:+07.2f}"
     robot_y_str = f"{robot_y:+07.2f}"
 
     angle_str_formatted = ""
     angle_deg = detected_object_info.get("angle_deg", 0.0)
+    angle_deg = float(angle_deg) - 0.0  # 假设偏移值为0.01
     #手动加上相应的偏移值
-    if 0<= angle_deg <= 180:
-        angle_deg = -angle_deg  # C#逻辑：0-180度为负角度
+    if 0<= angle_deg < 180:
+        angle_deg = angle_deg  # =0-180度为正角度
     else:
-        angle_deg = 360 - angle_deg # C#逻辑：180-360度为正角度
-    angle_deg = float(angle_deg) + 0.001  # 假设偏移值为0.01
-    angle_deg_judge = 5
-    # 根据C#代码中的格式调整角度和前缀
-    if shape in ["square", "rectangle", "diamond", "trapezoid"]: # 假设这些都用 S，梯形也用S处理角度
+        angle_deg = angle_deg -360 # C#逻辑：180-360为负角度
+
+    #PLC中角度行程不一样需要微调
+    from param import angle_deg_judge
+    if shape == "square": # 假设这些都用 S，梯形也用S处理角度
         prefix = "0xS"
         #匹配PLC中的行程
-        if 0 <= angle_deg <= 90:
-            angle_deg = angle_deg -180
-        elif 90 < angle_deg <= 180:
-            angle_deg = angle_deg - 270
-        elif -90 < angle_deg <= 0:
-            angle_deg = angle_deg - 90
+        if 0 < angle_deg < 90:
+            angle_deg = angle_deg -90
+        elif 90 < angle_deg < 180:
+            angle_deg = angle_deg - 180
+        elif -180 < angle_deg < -90:
+            angle_deg = angle_deg + 90
         angle_deg = angle_deg * angle_deg_judge
+
         angle_str_formatted = f"{angle_deg:+07.2f}" # 例如 +045.00, +270.00
 
     elif shape == "circle":
         prefix = "0xC"
         angle_str_formatted = "+000.00"
 
-    elif shape == "hexagon":
+    elif shape in ["rectangle", "diamond", "trapezoid", "hexagon"]:
         prefix = "0xH"
+        #匹配PLC中的行程
+        if 0 < angle_deg < 90:
+            angle_deg = angle_deg -90
+        elif 90 < angle_deg < 180:
+            angle_deg = angle_deg - 180
+        elif -180 < angle_deg < -90:
+            angle_deg = angle_deg + 90
         angle_deg = angle_deg * angle_deg_judge
+
         angle_str_formatted = f"{angle_deg:+07.2f}" # 同方形处理
     
     print(f"格式化对象: {shape}, 位置: ({robot_x_str}, {robot_y_str}), 角度: {angle_str_formatted}, 颜色: {color_code}")
@@ -97,7 +111,7 @@ class PLCServer:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen(1) # C#中是listen(1)，通常可以更大，如5
+            self.server_socket.listen(1) #通常可以更大，如5
             self.running = True
             self.log(f"TCP服务器启动，监听于 {self.host}:{self.port}")
 
@@ -156,7 +170,6 @@ class PLCServer:
                     formatted_results.append(format_object_data_for_plc(obj_info))
             
             # 即使没有物体，也需要通知handler，它可能需要发送一个特定的空消息或不发送
-            # C#中，若无物体，Workpiece_Deetection1 似乎不发送，等待下一个指令
             # 我们让 handler 自己决定如何处理空列表
             handler.set_workpiece_data_to_send(formatted_results)
         else:
@@ -176,7 +189,6 @@ class PLCServer:
                 else:
                     self.log("错误：发送ERROR_POS时未提供区域标识。")
             elif message_type == "OVER":
-                # C#逻辑：发送Over前会递增SortIndex，这里SortIndex由handler内部管理
                 handler.send_message(format_over_for_plc())
             # 可以扩展其他特定消息
         else:
@@ -223,8 +235,8 @@ class ClientHandlerThread(threading.Thread):
         self.current_area_num = 0 # 由 "Start" 指令更新
         self.workpiece_information_to_send = [] # 存储当前批次待发送的格式化后的工件字符串
         self.current_send_index = 0
-        self.movement_flag = False # 对应C#中的MovementFlag，用于纠偏逻辑
-        self.sort_index = 0 # 对应C#中的SortIndex，与AllWorkpiece_Information相关，这里可能用途不同
+        self.movement_flag = False 
+        self.sort_index = 0 
 
     def log(self, message):
         """通过服务器实例记录日志。"""
@@ -235,7 +247,6 @@ class ClientHandlerThread(threading.Thread):
         if not self.running or self.stop_flag:
             return False
         try:
-            # C#代码中不加换行符，直接发送字节
             # self.client_socket.sendall((message + "\n").encode('utf-8'))
             self.client_socket.sendall(message.encode('utf-8'))
             self.log(f"已发送: {message}")
@@ -263,7 +274,6 @@ class ClientHandlerThread(threading.Thread):
                 self.current_send_index = 0
         else:
             self.log("没有检测到工件数据需要发送。")
-            # 根据C#逻辑，若无工件，不主动发送，等待PLC指令
 
     def run(self):
         """处理来自单个PLC客户端的通信。"""
@@ -271,8 +281,6 @@ class ClientHandlerThread(threading.Thread):
         try:
             while self.running and not self.stop_flag:
                 try:
-                    # C#代码中 buffer = new byte[1024 * 1024 * 2]; r = socketSend.Receive(buffer);
-                    # string str = Encoding.UTF8.GetString(buffer, 2, r); // 跳过了前2字节
                     # Python中简单接收
                     data = self.client_socket.recv(1024) # 接收缓冲区大小
                     if not data:
@@ -280,10 +288,9 @@ class ClientHandlerThread(threading.Thread):
                         self.running = False
                         break
         
-                    # C#中跳过了前2字节。这里假设PLC发送的指令不包含那2字节，直接是命令字符串。
                     # 如果PLC确实发送了包含长度或其他信息的前缀字节，需要在此处处理。
-                    # 假设直接是命令字符串
-                    data = data[2:]  # C#中跳过了前2字节，这里假设PLC发送的指令包含那2字节
+                    # 跳过了前2字节，这里假设PLC发送的指令包含那2多余字节
+                    data = data[2:]  
                     command = data.decode('utf-8').strip()
                     self.log(f"\n收到指令: '{command}'\n")
 
@@ -307,7 +314,7 @@ class ClientHandlerThread(threading.Thread):
                         )
                         # 结果将通过 PLCServer.send_results_to_plc -> self.set_workpiece_data_to_send 来设置和发送第一条
 
-                    elif command.startswith("Sort"): # C# 是 GetString(buffer, 2, 4) == "Sort"
+                    elif command.startswith("Sort"): 
                         self.log(f"------处理'Sort'指令，MovementFlag: {self.movement_flag}, SortIndex: {self.sort_index}")
                         self.workpiece_information_to_send = []
                         self.current_send_index = 0
@@ -321,19 +328,17 @@ class ClientHandlerThread(threading.Thread):
                             area_num=self.current_area_num, # Sort通常在当前区域
                             sort_payload = {"detection_mode": detection_mode_for_sort, "sort_index": self.sort_index}
                         )
-                        # C#中SortIndex在发送Over前递增，这里也需要在AppUI回调后处理
 
-                    elif command.startswith("Stop"): # C# 是 GetString(buffer, 2, 4) == "Stop"
+                    elif command.startswith("Stop"): 
                         self.log("------处理'Stop'指令。")
                         self.workpiece_information_to_send = [] # 清空
                         self.current_send_index = 0
                         # self.current_area_num = 0 # C# 中重置AreaNum
-                        # self.sort_index = 0 # C# 中重置AllWorkpieceIndex/SortIndex
+                        # self.sort_index = 0 
                         self.server.request_process_callback(client_socket=self.client_socket, command="STOP")
-                        # C#中 IscontinueGrabing = false; ScanPointNum = 0; AllWorkpieceIndex = 0; AreaNum = 0;
                         # 这些状态的重置应在 AppUI 的回调中处理相机和应用状态
 
-                    elif command.startswith("OK"): # C# 是 GetString(buffer, 2, 2) == "OK"
+                    elif command.startswith("OK"): 
                         self.log("------处理'OK'指令。")
                         if self.current_send_index < len(self.workpiece_information_to_send):
                             next_data_to_send = self.workpiece_information_to_send[self.current_send_index]

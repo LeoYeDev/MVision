@@ -1,3 +1,4 @@
+#图像处理模块，可单独运行测试
 import cv2
 import numpy as np
 import time
@@ -10,25 +11,13 @@ from process_math import *
 from param import PLC_SERVER_HOST, PLC_SERVER_PORT, CALIBRATION_FILE_PATH, SCAN_AREA_FILES
 
 class Processor:
-    def __init__(self, img):
-        self.img = img 
-
+    def __init__(self):
         # 定义几种常见颜色在 HSV 空间的阈值范围（示例）
-        # self.hsv_ranges = {
-        #     'red1': ((0, 100, 20),   (10, 255, 255)),
-        #     'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
-        #     'green': ((40,  50,  10),  (90,  255, 255)),
-        #     'blue': ((90, 85,  13),  (160, 255, 255)),
-        #     'yellow': ((10, 60, 13), (30, 255, 255)),
-        # }
-
-        self.hsv_ranges = {
-            'yellow': ((5, 60, 13), (30, 255, 255)),
-            'red1': ((0, 100, 20),   (100, 255, 255)),
-            'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
-            'green': ((40,  50,  10),  (90,  255, 255)),
-            'blue': ((90, 85,  13),  (160, 255, 255)),
-        }
+        from param import hsv_range
+        self.hsv_ranges = hsv_range
+        # --- 形态学操作的结构元素 ---
+        self.kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        self.kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
         # 最小检测面积 
         self.min_area = 50000
         # 轮廓逼近精度
@@ -58,27 +47,23 @@ class Processor:
             print(f"加载标定文件 '{filepath}' 时发生错误: {e}")
             self.affine_transform_matrix = np.eye(3, dtype=np.float32)
 
-    def process(self, roi_rect=None):
-        img_display = self.img.copy()# 用于绘制结果的图像
+    def process(self, original_img, roi_rect=None):
+        img_display = original_img.copy()# 用于绘制结果的图像
        # --- 【核心修改】应用ROI遮罩 ---
-        roi_rect = [300, 200, 2000, 1500]
+        roi_rect = [350, 200, 2000, 1500]
         if roi_rect is not None:
-            # 创建一个半透明的浅色覆盖层
-            overlay = img_display.copy()
-            cv2.rectangle(overlay, (0, 0), (overlay.shape[1], overlay.shape[0]), (230, 230, 230), -1)
-            # 将覆盖层与显示图像混合
-            alpha = 0.6  # 透明度
-            img_display = cv2.addWeighted(overlay, alpha, img_display, 1 - alpha, 0)
+            starttime = time.time()
             # "擦亮" ROI 区域，恢复其原始内容
             x, y, w, h = roi_rect
-            img_display[y:y+h, x:x+w] = self.img[y:y+h, x:x+w]
+            img_display[y:y+h, x:x+w] = original_img[y:y+h, x:x+w]
             # 绘制清晰的ROI边框
             cv2.rectangle(img_display, (x, y), (x+w, y+h), (255, 255, 0), 3)
+            #print(f"应用ROI: {roi_rect}, 耗时: {time.time() - starttime:.4f} 秒")
         else:
             x,y,w,h= 0, 0, img_display.shape[1], img_display.shape[0] # 如果没有ROI，使用全图
 
         # --- 对原始、完整的图像进行颜色分割和轮廓提取 ---
-        hsv = cv2.cvtColor(self.img, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(original_img, cv2.COLOR_BGR2HSV)
         
         # 合并所有颜色掩膜
         mask = None
@@ -89,16 +74,14 @@ class Processor:
         if mask is None: return img_display, [] 
 
         # 形态学操作 (保持上一版本中的平滑处理)
-        kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_open, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel_open, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.kernel_close, iterations=1)
         mask = cv2.medianBlur(mask, 5)
          
         # 轮廓提取 (修正)
         contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        h_img, w_img = self.img.shape[:2] 
+        h_img, w_img = original_img.shape[:2] 
         img_total_area = h_img * w_img
         
         # --- 新增：用于存储所有检测到的物料信息，包括机械臂坐标 ---
@@ -269,15 +252,6 @@ class Processor:
             pixel_y_to_transform = float(cy_rect_float)
 
             if self.affine_transform_matrix is not None:
-                # 应用仿射变换:
-                # X_robot = u*C[0,0] + v*C[1,0] + C[2,0]
-                # Y_robot = u*C[0,1] + v*C[1,1] + C[2,1]
-                # 注意C#数组和Python NumPy数组的索引方式可能不同，这里假设 self.affine_transform_matrix 
-                # 的存储方式与C#代码中 transformation_array[row, col] 对应。
-                # C# transformation_array[0,0] -> self.affine_transform_matrix[0,0] (u的X系数)
-                # C# transformation_array[1,0] -> self.affine_transform_matrix[1,0] (v的X系数)
-                # C# transformation_array[2,0] -> self.affine_transform_matrix[2,0] (X的平移)
-                
                 C = self.affine_transform_matrix
                 robot_x = pixel_x_to_transform * C[0,0] + pixel_y_to_transform * C[1,0] + C[2,0]
                 robot_y = pixel_x_to_transform * C[0,1] + pixel_y_to_transform * C[1,1] + C[2,1]
@@ -317,31 +291,34 @@ class Processor:
             if shape_label != 'circle':
                 cv2.putText(img_display, f"A:{display_angle_text}", (text_base_x, text_base_y + 3*line_spacing),
                             cv2.FONT_HERSHEY_SIMPLEX, self.font_scale, (24,240,240), self.text_thickness, cv2.LINE_AA)
-                
-            # 存储信息 (如果需要返回给调用者)
-            current_object_data = {
-                "shape": shape_label,
-                "color": color_label,
-                "angle_deg": calculated_angle_0_360 if shape_label != 'circle' else -1.0, # -1.0 表示圆形
-                "robot_x": robot_x, 
-                "robot_y": robot_y
-            }
-            detected_objects_info.append(current_object_data)
-            # print(f"检测到物体: {current_object_data}")
+            
+            if shape_label == 'circle' or shape_label == 'square':
+                # 存储信息 (如果需要返回给调用者)
+                current_object_data = {
+                    "shape": shape_label,
+                    "color": color_label,
+                    "angle_deg": calculated_angle_0_360 if shape_label != 'circle' else -1.0, # -1.0 表示圆形
+                    "robot_x": robot_x, 
+                    "robot_y": robot_y
+                }
+                detected_objects_info.append(current_object_data)
+            
+        #print(f"检测到物体: {detected_objects_info}")
         return img_display, detected_objects_info
 
-
+#在此单独测试图像处理算法
 if __name__ == "__main__":
-    img_path = '1454.jpg'           
+    img_path = '3.jpg'           
     img_main = cv2.imread(img_path)
     print(f"读取图像: {img_path}, 大小: {img_main.shape[1]}x{img_main.shape[0]}")
     
     if img_main.shape[2] == 4: # 处理PNG等带Alpha通道的图像
         img_main = cv2.cvtColor(img_main, cv2.COLOR_BGRA2BGR)
 
+    processor = Processor() 
     starttime = time.time()
-    processor = Processor(img_main) 
-    result_img ,_ = processor.process()
+    for i in range(1):
+        result_img ,_ = processor.process(original_img = img_main)
     endtime = time.time()
     print(f"处理时间: {endtime - starttime:.4f} 秒")
 

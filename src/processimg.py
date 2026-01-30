@@ -5,8 +5,10 @@ import time
 import sys
 import os
 
-sys.path.append("./src")
-sys.path.append("./config")
+# 导入路径设置 - 相对于项目根目录
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_project_root, "config"))
+
 from process_math import *
 from param import PLC_SERVER_HOST, PLC_SERVER_PORT, CALIBRATION_FILE_PATH, SCAN_AREA_FILES
 

@@ -3,9 +3,13 @@ import socket
 import threading
 import time
 import queue
-import sys 
+import sys
+import os
 
-sys.path.append("./config")
+# 导入路径设置 - 相对于项目根目录
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_project_root, "config"))
+
 from param import *
 
 # --- 数据格式化函数 ---

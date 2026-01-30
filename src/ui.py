@@ -1,15 +1,18 @@
 #定义一个图形用户界面(GUI)类AppUI，用于控制相机采集、PLC通信等功能
 import sys
+import os
 import tkinter as tk
 
 from tkinter import scrolledtext, messagebox, ttk, Frame, Label, Button, Radiobutton, Checkbutton, Entry, LabelFrame,StringVar, IntVar
 from tkinter.messagebox import *
 
-sys.path.append("./lib/MvImport")
-sys.path.append("./lib/Own")
-sys.path.append("./config")
+# 导入路径设置 - 相对于项目根目录
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_project_root, "lib", "MvImport"))
+sys.path.insert(0, os.path.join(_project_root, "config"))
+
 from MvCameraControl_class import *
-from CamOperation_class import *
+from cam_operation import CameraOperation
 from tcp import PLCServer
 from processimg import Processor
 from param import PLC_SERVER_HOST, PLC_SERVER_PORT, CALIBRATION_FILE_PATH, SCAN_AREA_FILES

@@ -1,0 +1,1 @@
+# MVision configuration package

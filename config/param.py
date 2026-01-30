@@ -1,29 +1,35 @@
-PLC_SERVER_HOST = "0.0.0.0"# 您的PLC服务器IP地址，0.0.0.0表示监听所有可用地址
-PLC_SERVER_PORT = 2000 # 您使用的新端口
+# MVision 配置文件
+import os
 
-CALIBRATION_FILE_PATH = "1.txt" # 仿射变换矩阵文件
-# --- 修改这里：定义扫描区域的配置文件路径 ---
+# 获取项目根目录
+_config_dir = os.path.dirname(os.path.abspath(__file__))
+_project_root = os.path.dirname(_config_dir)
+
+# ==================== PLC 服务器配置 ====================
+PLC_SERVER_HOST = "0.0.0.0"  # 监听所有网络接口
+PLC_SERVER_PORT = 2000       # TCP 端口
+
+# ==================== 文件路径配置 ====================
+# 标定文件路径
+CALIBRATION_FILE_PATH = os.path.join(_project_root, "assets", "calibration", "affine_matrix.txt")
+
+# 扫描区域配置文件
 SCAN_AREA_FILES = [
-    "扫描区A.txt",
-    "扫描区B.txt",
-    "扫描区C.txt",
-    "扫描区D.txt",
+    os.path.join(_project_root, "config", "scan_areas", "area_A.txt"),
+    os.path.join(_project_root, "config", "scan_areas", "area_B.txt"),
+    os.path.join(_project_root, "config", "scan_areas", "area_C.txt"),
+    os.path.join(_project_root, "config", "scan_areas", "area_D.txt"),
 ]
 
-#PLC中角度行程不一样需要微调，角度旋转不准应该先调整方形工件无旋转角时候的偏移量，后调整此匹配行程
+# ==================== 角度校正参数 ====================
+# PLC中角度行程不一样需要微调
 angle_deg_judge = 5.88
-# --- 修改这里：定义颜色范围 ---
+
+# ==================== HSV 颜色阈值配置 ====================
 hsv_range = {
-            'yellow': ((5, 60, 13), (30, 255, 255)),
-            'red1': ((0, 100, 20),   (100, 255, 255)),
-            'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
-            'green': ((40,  50,  10),  (90,  255, 255)),
-            'blue': ((90, 85,  13),  (160, 255, 255)),
-        }
-# self.hsv_ranges = {
-        #     'red1': ((0, 100, 20),   (10, 255, 255)),
-        #     'red2': ((156, 100, 20), (180, 255, 255)),  # 红色有两个区间
-        #     'green': ((40,  50,  10),  (90,  255, 255)),
-        #     'blue': ((90, 85,  13),  (160, 255, 255)),
-        #     'yellow': ((10, 60, 13), (30, 255, 255)),
-        # }
+    'yellow': ((5, 60, 13), (30, 255, 255)),
+    'red1': ((0, 100, 20), (100, 255, 255)),
+    'red2': ((156, 100, 20), (180, 255, 255)),
+    'green': ((40, 50, 10), (90, 255, 255)),
+    'blue': ((90, 85, 13), (160, 255, 255)),
+}
